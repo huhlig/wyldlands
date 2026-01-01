@@ -22,8 +22,10 @@
 mod ai;
 mod character;
 mod combat;
+mod goap;
 mod identity;
 mod interaction;
+mod npc;
 mod persistence;
 mod spatial;
 
@@ -31,8 +33,10 @@ mod spatial;
 pub use ai::*;
 pub use character::*;
 pub use combat::*;
+pub use goap::*;
 pub use identity::*;
 pub use interaction::*;
+pub use npc::*;
 pub use persistence::*;
 pub use spatial::*;
 

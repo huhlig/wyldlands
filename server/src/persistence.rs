@@ -53,6 +53,23 @@ impl PersistenceManager {
         }
     }
 
+    /// Get a reference to the database pool
+    pub fn database(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Get account by ID from database
+    pub async fn get_account_by_id(&self, account_id: Uuid) -> Result<wyldlands_common::account::Account, sqlx::Error> {
+        sqlx::query_as::<_, wyldlands_common::account::Account>(
+            "SELECT id, login, display, timezone, discord, email, rating, active, role
+             FROM wyldlands.accounts
+             WHERE id = $1"
+        )
+        .bind(account_id)
+        .fetch_one(&self.pool)
+        .await
+    }
+
     /// Create a new character entity in the database
     /// Returns the UUID of the newly created character
     pub async fn create_character(
@@ -680,6 +697,8 @@ impl PersistenceManager {
                 initiative,
                 action_cooldown,
                 time_since_action,
+                is_defending: false,
+                defense_bonus: 0,
             };
             world
                 .insert_one(entity_id, combatant)

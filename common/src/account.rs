@@ -19,6 +19,46 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Account role for access control
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "account_role", rename_all = "lowercase")]
+pub enum AccountRole {
+    Player,
+    Storyteller,
+    Builder,
+    Admin,
+}
+
+impl AccountRole {
+    /// Check if this role has at least the specified role level
+    pub fn has_permission(&self, required: AccountRole) -> bool {
+        let self_level = self.level();
+        let required_level = required.level();
+        self_level >= required_level
+    }
+    
+    /// Get numeric level for role comparison
+    fn level(&self) -> u8 {
+        match self {
+            AccountRole::Player => 0,
+            AccountRole::Storyteller => 1,
+            AccountRole::Builder => 2,
+            AccountRole::Admin => 3,
+        }
+    }
+}
+
+impl std::fmt::Display for AccountRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AccountRole::Player => write!(f, "Player"),
+            AccountRole::Storyteller => write!(f, "Storyteller"),
+            AccountRole::Builder => write!(f, "Builder"),
+            AccountRole::Admin => write!(f, "Admin"),
+        }
+    }
+}
+
 /// Account information (password is never included for security)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Account {
@@ -30,7 +70,7 @@ pub struct Account {
     pub email: Option<String>,
     pub rating: i32,
     pub active: bool,
-    pub admin: bool,
+    pub role: AccountRole,
 }
 
 impl Account {
@@ -45,7 +85,7 @@ impl Account {
             email: None,
             rating: 0,
             active: true,
-            admin: false,
+            role: AccountRole::Player,
         }
     }
 }
@@ -64,7 +104,7 @@ mod tests {
         assert_eq!(account.login, "testuser");
         assert_eq!(account.display, "Test User");
         assert!(account.active);
-        assert!(!account.admin);
+        assert_eq!(account.role, AccountRole::Player);
     }
     
     #[test]

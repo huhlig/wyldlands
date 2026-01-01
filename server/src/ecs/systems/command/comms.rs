@@ -14,10 +14,10 @@
 // limitations under the License.
 //
 
-use crate::ecs::components::{Description, Enterable, Location, Name, Room};
+use crate::ecs::EcsEntity;
+use crate::ecs::components::Name;
 use crate::ecs::context::WorldContext;
 use crate::ecs::systems::CommandResult;
-use crate::ecs::EcsEntity;
 use std::sync::Arc;
 
 #[tracing::instrument(skip(context), fields(entity_id = entity.id()))]

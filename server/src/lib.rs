@@ -17,6 +17,7 @@
 pub mod config;
 pub mod ecs;
 pub mod listener;
+pub mod llm;
 pub mod persistence;
 
 #[cfg(test)]

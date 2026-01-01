@@ -65,6 +65,12 @@ pub enum GameEvent {
         defender: EcsEntity,
         damage: i32,
     },
+    EntityDefended {
+        entity: EcsEntity,
+    },
+    EntityFled {
+        entity: EcsEntity,
+    },
     EntityDied {
         entity: EcsEntity,
         killer: Option<EcsEntity>,

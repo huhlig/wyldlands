@@ -14,6 +14,7 @@ services:
       - ./migrations/001_table_setup.sql:/docker-entrypoint-initdb.d/001_table_setup.sql
       - ./migrations/002_settings_data.sql:/docker-entrypoint-initdb.d/002_settings_data.sql
       - ./migrations/003_world_data.sql:/docker-entrypoint-initdb.d/003_world_data.sql
+      - ./migrations/004_help_data.sql:/docker-entrypoint-initdb.d/004_help_data.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

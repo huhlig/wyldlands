@@ -17,22 +17,35 @@
 //! Command system for processing player and NPC commands
 
 mod admin;
+mod combat;
 mod comms;
 mod exit;
+mod help;
 mod inventory;
+mod llm_generate;
 mod look;
+mod npc;
 mod query;
 mod score;
 
-use crate::ecs::components::Location;
+use crate::ecs::components::{Avatar, Location};
 use crate::ecs::context::WorldContext;
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::{EcsEntity, GameWorld};
 use std::collections::HashMap;
 use std::sync::Arc;
+use wyldlands_common::account::AccountRole;
 
 pub type CommandFn = Box<
-    dyn Fn(Arc<WorldContext>, EcsEntity, String, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = CommandResult> + Send + 'static>> + Send + Sync,
+    dyn Fn(
+            Arc<WorldContext>,
+            EcsEntity,
+            String,
+            Vec<String>,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = CommandResult> + Send + 'static>>
+        + Send
+        + Sync,
 >;
 
 #[derive(Debug, Clone)]
@@ -46,6 +59,7 @@ struct CommandMetadata {
     handler: CommandFn,
     help_text: String,
     aliases: Vec<String>,
+    required_role: Option<AccountRole>,
 }
 
 pub struct CommandSystem {
@@ -67,20 +81,45 @@ impl CommandSystem {
         system
     }
 
-    /// Register a command with aliases and help text
-    /// TODO: Add validation for command names and aliases
-    pub fn register_command<F, Fut>(&mut self, name: String, aliases: Vec<String>, help_text: String, handler: F)
-    where
+    /// Register a command with aliases, help text, and optional role requirement
+    pub fn register_command<F, Fut>(
+        &mut self,
+        name: String,
+        aliases: Vec<String>,
+        help_text: String,
+        handler: F,
+    ) where
         F: Fn(Arc<WorldContext>, EcsEntity, String, Vec<String>) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = CommandResult> + Send + 'static,
     {
-        let handler = Box::new(move |ctx: Arc<WorldContext>, entity: EcsEntity, cmd: String, args: Vec<String>| {
-            Box::pin(handler(ctx, entity, cmd, args)) as std::pin::Pin<Box<dyn std::future::Future<Output = CommandResult> + Send + 'static>>
-        });
+        self.register_command_with_role(name, aliases, help_text, None, handler)
+    }
+
+    /// Register a command with role requirement
+    pub fn register_command_with_role<F, Fut>(
+        &mut self,
+        name: String,
+        aliases: Vec<String>,
+        help_text: String,
+        required_role: Option<AccountRole>,
+        handler: F,
+    ) where
+        F: Fn(Arc<WorldContext>, EcsEntity, String, Vec<String>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = CommandResult> + Send + 'static,
+    {
+        let handler = Box::new(
+            move |ctx: Arc<WorldContext>, entity: EcsEntity, cmd: String, args: Vec<String>| {
+                Box::pin(handler(ctx, entity, cmd, args))
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = CommandResult> + Send + 'static>,
+                    >
+            },
+        );
         let metadata = CommandMetadata {
             handler,
             help_text,
             aliases: aliases.clone(),
+            required_role,
         };
         self.commands.insert(name.clone(), metadata);
         for alias in aliases {
@@ -88,17 +127,89 @@ impl CommandSystem {
         }
     }
 
-    /// Generate help text from registered commands
-    fn generate_help(&self) -> String {
+    /// Check if entity has required role for a command
+    async fn check_role_permission(
+        &self,
+        context: Arc<WorldContext>,
+        entity: EcsEntity,
+        required_role: AccountRole,
+    ) -> Result<(), String> {
+        // Get the avatar component to find account_id
+        let account_id = {
+            let world = context.entities().read().await;
+            match world.get::<&Avatar>(entity) {
+                Ok(avatar) => avatar.account_id,
+                Err(_) => {
+                    return Err("You must be logged in to use this command".to_string());
+                }
+            }
+        };
+
+        // Get account from database to check role
+        let account = context
+            .persistence()
+            .get_account_by_id(account_id)
+            .await
+            .map_err(|e| format!("Failed to verify permissions: {}", e))?;
+
+        // Check if account has required role
+        if !account.role.has_permission(required_role) {
+            return Err(format!(
+                "You need {} role or higher to use this command",
+                required_role
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Generate help text from registered commands, filtered by user's role
+    pub async fn generate_help(&self, context: Arc<WorldContext>, entity: EcsEntity) -> String {
+        // Get user's role
+        let user_role = self
+            .get_user_role(context.clone(), entity)
+            .await
+            .unwrap_or(AccountRole::Player);
+
         let mut regular_commands = Vec::new();
+        let mut storyteller_commands = Vec::new();
+        let mut builder_commands = Vec::new();
         let mut admin_commands = Vec::new();
         let mut movement_commands = Vec::new();
 
         for (name, metadata) in &self.commands {
+            // Skip commands that require a higher role than the user has
+            if let Some(required_role) = metadata.required_role {
+                if !user_role.has_permission(required_role) {
+                    continue;
+                }
+            }
+
+            // Categorize commands
             if name.starts_with("world ") {
                 admin_commands.push(&metadata.help_text);
-            } else if ["north", "south", "east", "west", "up", "down", "northeast", "northwest", "southeast", "southwest"].contains(&name.as_str()) {
+            } else if [
+                "north",
+                "south",
+                "east",
+                "west",
+                "up",
+                "down",
+                "northeast",
+                "northwest",
+                "southeast",
+                "southwest",
+            ]
+            .contains(&name.as_str())
+            {
                 movement_commands.push(&metadata.help_text);
+            } else if let Some(required_role) = metadata.required_role {
+                match required_role {
+                    AccountRole::Admin => admin_commands.push(&metadata.help_text),
+                    AccountRole::Builder => builder_commands.push(&metadata.help_text),
+                    AccountRole::Storyteller => storyteller_commands.push(&metadata.help_text),
+                    AccountRole::Player => regular_commands.push(&metadata.help_text),
+                }
             } else {
                 regular_commands.push(&metadata.help_text);
             }
@@ -106,6 +217,8 @@ impl CommandSystem {
 
         // Sort each category
         regular_commands.sort();
+        storyteller_commands.sort();
+        builder_commands.sort();
         admin_commands.sort();
         movement_commands.sort();
 
@@ -115,16 +228,6 @@ impl CommandSystem {
             help.push_str(cmd);
             help.push('\r');
             help.push('\n');
-        }
-
-        if !admin_commands.is_empty() {
-            help.push_str("\r\nAdmin Commands:\r\n");
-            for cmd in admin_commands {
-                help.push_str("  ");
-                help.push_str(cmd);
-                help.push('\r');
-                help.push('\n');
-            }
         }
 
         if !movement_commands.is_empty() {
@@ -137,11 +240,67 @@ impl CommandSystem {
             }
         }
 
+        if !storyteller_commands.is_empty() {
+            help.push_str("\r\nStoryteller Commands:\r\n");
+            for cmd in storyteller_commands {
+                help.push_str("  ");
+                help.push_str(cmd);
+                help.push('\r');
+                help.push('\n');
+            }
+        }
+
+        if !builder_commands.is_empty() {
+            help.push_str("\r\nBuilder Commands:\r\n");
+            for cmd in builder_commands {
+                help.push_str("  ");
+                help.push_str(cmd);
+                help.push('\r');
+                help.push('\n');
+            }
+        }
+
+        if !admin_commands.is_empty() {
+            help.push_str("\r\nAdmin Commands:\r\n");
+            for cmd in admin_commands {
+                help.push_str("  ");
+                help.push_str(cmd);
+                help.push('\r');
+                help.push('\n');
+            }
+        }
+
         help
     }
 
+    /// Get the user's role from their account
+    async fn get_user_role(
+        &self,
+        context: Arc<WorldContext>,
+        entity: EcsEntity,
+    ) -> Result<AccountRole, String> {
+        // Get the avatar component to find account_id
+        let account_id = {
+            let world = context.entities().read().await;
+            match world.get::<&Avatar>(entity) {
+                Ok(avatar) => avatar.account_id,
+                Err(_) => {
+                    return Ok(AccountRole::Player); // Default to player if not logged in
+                }
+            }
+        };
+
+        // Get account from database to check role
+        let account = context
+            .persistence()
+            .get_account_by_id(account_id)
+            .await
+            .map_err(|e| format!("Failed to get account: {}", e))?;
+
+        Ok(account.role)
+    }
+
     /// Execute a command
-    #[tracing::instrument(skip(self, context), fields(entity_id = entity.id()))]
     pub async fn execute(
         &mut self,
         context: Arc<WorldContext>,
@@ -154,14 +313,46 @@ impl CommandSystem {
         // Try to resolve alias
         let cmd_name = self.aliases.get(&cmd_name).unwrap_or(&cmd_name).clone();
 
-        // Special handling for help command to access command registry
+        // Special handling for help command - delegate to help system
         if cmd_name == "help" {
-            return CommandResult::Success(self.generate_help());
+            if args.is_empty() {
+                // Basic help
+                return help::help_command(
+                    context.clone(),
+                    entity,
+                    cmd_name.clone(),
+                    args.to_vec(),
+                )
+                .await;
+            } else if args[0].to_lowercase() == "commands" {
+                // List all commands - use dynamic generation from registered commands filtered by role
+                return CommandResult::Success(self.generate_help(context.clone(), entity).await);
+            } else {
+                // Help for specific keyword - use database
+                return help::help_keyword_command(
+                    context.clone(),
+                    entity,
+                    cmd_name.clone(),
+                    args.to_vec(),
+                )
+                .await;
+            }
         }
 
         // First try exact match
         if let Some(metadata) = self.commands.get(&cmd_name) {
-            let result = (metadata.handler)(context.clone(), entity, cmd_name.clone(), args.to_vec()).await;
+            // Check role permission if required
+            if let Some(required_role) = metadata.required_role {
+                if let Err(err) = self
+                    .check_role_permission(context.clone(), entity, required_role)
+                    .await
+                {
+                    return CommandResult::Failure(err);
+                }
+            }
+
+            let result =
+                (metadata.handler)(context.clone(), entity, cmd_name.clone(), args.to_vec()).await;
 
             self.event_bus.publish(GameEvent::CommandExecuted {
                 entity,
@@ -177,12 +368,32 @@ impl CommandSystem {
             let subcommand_name = format!("{} {}", cmd_name, args[0].to_lowercase());
 
             // Try to resolve subcommand alias
-            let subcommand_name = self.aliases.get(&subcommand_name).unwrap_or(&subcommand_name).clone();
+            let subcommand_name = self
+                .aliases
+                .get(&subcommand_name)
+                .unwrap_or(&subcommand_name)
+                .clone();
 
             if let Some(metadata) = self.commands.get(&subcommand_name) {
+                // Check role permission if required
+                if let Some(required_role) = metadata.required_role {
+                    if let Err(err) = self
+                        .check_role_permission(context.clone(), entity, required_role)
+                        .await
+                    {
+                        return CommandResult::Failure(err);
+                    }
+                }
+
                 // Pass remaining args (excluding the subcommand)
                 let remaining_args = args[1..].to_vec();
-                let result = (metadata.handler)(context.clone(), entity, subcommand_name.clone(), remaining_args).await;
+                let result = (metadata.handler)(
+                    context.clone(),
+                    entity,
+                    subcommand_name.clone(),
+                    remaining_args,
+                )
+                .await;
 
                 self.event_bus.publish(GameEvent::CommandExecuted {
                     entity,
@@ -248,6 +459,55 @@ impl CommandSystem {
             |ctx, entity, cmd, args| score::score_command(ctx, entity, cmd, args),
         );
 
+        // Combat commands
+        self.register_command(
+            "attack".to_string(),
+            vec!["kill".to_string(), "k".to_string()],
+            "attack (kill, k) <target> - Attack a target".to_string(),
+            |ctx, entity, _cmd, args| async move {
+                match combat::handle_attack(ctx, entity, &args).await {
+                    Ok(msg) => CommandResult::Success(msg),
+                    Err(msg) => CommandResult::Failure(msg),
+                }
+            },
+        );
+
+        self.register_command(
+            "defend".to_string(),
+            vec!["def".to_string()],
+            "defend (def)       - Take a defensive stance".to_string(),
+            |ctx, entity, _cmd, args| async move {
+                match combat::handle_defend(ctx, entity, &args).await {
+                    Ok(msg) => CommandResult::Success(msg),
+                    Err(msg) => CommandResult::Failure(msg),
+                }
+            },
+        );
+
+        self.register_command(
+            "flee".to_string(),
+            vec!["run".to_string()],
+            "flee (run)         - Attempt to flee from combat".to_string(),
+            |ctx, entity, _cmd, args| async move {
+                match combat::handle_flee(ctx, entity, &args).await {
+                    Ok(msg) => CommandResult::Success(msg),
+                    Err(msg) => CommandResult::Failure(msg),
+                }
+            },
+        );
+
+        self.register_command(
+            "combat".to_string(),
+            vec!["c".to_string()],
+            "combat (c)         - View combat status".to_string(),
+            |ctx, entity, _cmd, args| async move {
+                match combat::handle_combat_status(ctx, entity, &args).await {
+                    Ok(msg) => CommandResult::Success(msg),
+                    Err(msg) => CommandResult::Failure(msg),
+                }
+            },
+        );
+
         // Exit/quit command
         self.register_command(
             "exit".to_string(),
@@ -261,42 +521,322 @@ impl CommandSystem {
         );
 
         // World inspect command (admin)
-        self.register_command(
+        self.register_command_with_role(
             "world inspect".to_string(),
-            vec!["winspect".to_string(), "query".to_string(), "inspect".to_string()],
+            vec![
+                "winspect".to_string(),
+                "query".to_string(),
+                "inspect".to_string(),
+            ],
             "world inspect (winspect) - Query all components of an entity by UUID".to_string(),
+            Some(AccountRole::Admin),
             |ctx, entity, cmd, args| admin::query_entity_command(ctx, entity, cmd, args),
         );
 
         // World list command (admin)
-        self.register_command(
+        self.register_command_with_role(
             "world list".to_string(),
-            vec!["wlist".to_string(), "entities".to_string(), "list".to_string()],
-            "world list (wlist)     - List all entities with their UUIDs and components".to_string(),
+            vec![
+                "wlist".to_string(),
+                "entities".to_string(),
+                "list".to_string(),
+            ],
+            "world list (wlist)     - List all entities with their UUIDs and components"
+                .to_string(),
+            Some(AccountRole::Admin),
             |ctx, entity, cmd, args| admin::list_entities_command(ctx, entity, cmd, args),
         );
 
         // World save command (admin)
-        self.register_command(
+        self.register_command_with_role(
             "world save".to_string(),
             vec!["wsave".to_string()],
             "world save (wsave)     - Save all persistent entities to the database".to_string(),
+            Some(AccountRole::Admin),
             |ctx, entity, cmd, args| admin::world_save_command(ctx, entity, cmd, args),
         );
 
         // World reload command (admin)
-        self.register_command(
+        self.register_command_with_role(
             "world reload".to_string(),
             vec!["wreload".to_string()],
             "world reload (wreload) - Clear ECS and reload entities from database".to_string(),
+            Some(AccountRole::Admin),
             |ctx, entity, cmd, args| admin::world_reload_command(ctx, entity, cmd, args),
         );
 
-        // Help command - dynamically generates help from registered commands
+        // Area commands (builder)
+        self.register_command_with_role(
+            "area create".to_string(),
+            vec!["acreate".to_string()],
+            "area create (acreate) <name> - Create a new area".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::area_create_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "area list".to_string(),
+            vec!["alist".to_string()],
+            "area list (alist) [filter] - List all areas".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::area_list_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "area edit".to_string(),
+            vec!["aedit".to_string()],
+            "area edit (aedit) <uuid> <property> <value> - Edit area properties".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::area_edit_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "area delete".to_string(),
+            vec!["adelete".to_string()],
+            "area delete (adelete) <uuid> - Delete an area (if empty)".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::area_delete_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "area info".to_string(),
+            vec!["ainfo".to_string()],
+            "area info (ainfo) <uuid> - Show detailed area information".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::area_info_command(ctx, entity, cmd, args),
+        );
+
+        // Room commands (builder)
+        self.register_command_with_role(
+            "room create".to_string(),
+            vec!["rcreate".to_string()],
+            "room create (rcreate) <area-uuid> <name> - Create a new room".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::room_create_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "room list".to_string(),
+            vec!["rlist".to_string()],
+            "room list (rlist) [area-uuid] - List rooms in area or all rooms".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::room_list_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "room goto".to_string(),
+            vec!["rgoto".to_string(), "goto".to_string()],
+            "room goto (rgoto, goto) <uuid> - Teleport to a room".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::room_goto_command(ctx, entity, cmd, args),
+        );
+
+        // Exit commands (builder)
+        self.register_command_with_role(
+            "exit add".to_string(),
+            vec!["exitadd".to_string()],
+            "exit add (exitadd) <direction> <dest-uuid> - Add exit from current room".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::exit_add_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "exit remove".to_string(),
+            vec!["exitremove".to_string()],
+            "exit remove (exitremove) <direction> - Remove exit from current room".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::exit_remove_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "exit list".to_string(),
+            vec!["exitlist".to_string(), "exits".to_string()],
+            "exit list (exitlist, exits) - List exits from current room".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::exit_list_command(ctx, entity, cmd, args),
+        );
+
+        // Dig command (builder)
+        self.register_command_with_role(
+            "dig".to_string(),
+            vec![],
+            "dig <direction> <name> [oneway] [area <uuid>] - Create and connect new room"
+                .to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| admin::dig_command(ctx, entity, cmd, args),
+        );
+
+        // Phase 2: Advanced room/exit commands (builder)
+        self.register_command_with_role(
+            "room edit".to_string(),
+            vec!["redit".to_string()],
+            "room edit (redit) <uuid> <field> <value> - Edit room properties".to_string(),
+            Some(AccountRole::Builder),
+            admin::room_edit_command,
+        );
+
+        self.register_command_with_role(
+            "room deleteall".to_string(),
+            vec!["rdeleteall".to_string()],
+            "room deleteall (rdeleteall) <area-uuid> - Delete all rooms in an area".to_string(),
+            Some(AccountRole::Builder),
+            admin::room_delete_bulk_command,
+        );
+
+        self.register_command_with_role(
+            "exit edit".to_string(),
+            vec!["exitedit".to_string()],
+            "exit edit (exitedit) <direction> <property> <value> - Edit exit properties"
+                .to_string(),
+            Some(AccountRole::Builder),
+            admin::exit_edit_command,
+        );
+
+        self.register_command_with_role(
+            "area search".to_string(),
+            vec!["asearch".to_string()],
+            "area search (asearch) <query> - Search for areas by name".to_string(),
+            Some(AccountRole::Builder),
+            admin::area_search_command,
+        );
+
+        self.register_command_with_role(
+            "room search".to_string(),
+            vec!["rsearch".to_string()],
+            "room search (rsearch) <query> [area-uuid] - Search for rooms by name".to_string(),
+            Some(AccountRole::Builder),
+            admin::room_search_command,
+        );
+
+        // Phase 3: Item/Object editor commands (builder)
+        self.register_command_with_role(
+            "item create".to_string(),
+            vec!["icreate".to_string()],
+            "item create (icreate) <name> - Create a new item in current room".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_create_command,
+        );
+
+        self.register_command_with_role(
+            "item edit".to_string(),
+            vec!["iedit".to_string()],
+            "item edit (iedit) <uuid> <field> <value> - Edit item properties".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_edit_command,
+        );
+
+        self.register_command_with_role(
+            "item clone".to_string(),
+            vec!["iclone".to_string(), "icopy".to_string()],
+            "item clone (iclone, icopy) <uuid> [new-name] - Clone an existing item".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_clone_command,
+        );
+
+        self.register_command_with_role(
+            "item list".to_string(),
+            vec!["ilist".to_string(), "items".to_string()],
+            "item list (ilist, items) [query] - List items in current room".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_list_command,
+        );
+
+        // NPC commands (storyteller)
+        self.register_command_with_role(
+            "npc create".to_string(),
+            vec!["ncreate".to_string()],
+            "npc create (ncreate) <name> [template] - Create a new NPC".to_string(),
+            Some(AccountRole::Storyteller),
+            |ctx, entity, cmd, args| npc::npc_create_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "npc list".to_string(),
+            vec!["nlist".to_string()],
+            "npc list (nlist) [filter] - List all NPCs".to_string(),
+            Some(AccountRole::Storyteller),
+            |ctx, entity, cmd, args| npc::npc_list_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "npc edit".to_string(),
+            vec!["nedit".to_string()],
+            "npc edit (nedit) <uuid> <property> <value> - Edit NPC properties".to_string(),
+            Some(AccountRole::Storyteller),
+            |ctx, entity, cmd, args| npc::npc_edit_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "npc dialogue".to_string(),
+            vec!["ndialogue".to_string()],
+            "npc dialogue (ndialogue) <uuid> <property> <value> - Configure NPC dialogue"
+                .to_string(),
+            Some(AccountRole::Storyteller),
+            |ctx, entity, cmd, args| npc::npc_dialogue_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "npc goap".to_string(),
+            vec!["ngoap".to_string()],
+            "npc goap (ngoap) <uuid> <subcommand> [args] - Configure NPC GOAP AI".to_string(),
+            Some(AccountRole::Storyteller),
+            |ctx, entity, cmd, args| npc::npc_goap_command(ctx, entity, cmd, args),
+        );
+
+        // LLM Generation commands (builder)
+        self.register_command_with_role(
+            "room generate".to_string(),
+            vec!["rgen".to_string()],
+            "room generate (rgen) <prompt> - Generate room description using LLM".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| llm_generate::room_generate_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "item generate".to_string(),
+            vec!["igen".to_string()],
+            "item generate (igen) <prompt> - Generate item details using LLM".to_string(),
+            Some(AccountRole::Builder),
+            |ctx, entity, cmd, args| llm_generate::item_generate_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "npc generate".to_string(),
+            vec!["ngen".to_string()],
+            "npc generate (ngen) <prompt> - Generate NPC profile using LLM".to_string(),
+            Some(AccountRole::Storyteller),
+            |ctx, entity, cmd, args| llm_generate::npc_generate_command(ctx, entity, cmd, args),
+        );
+
+        self.register_command_with_role(
+            "item info".to_string(),
+            vec!["iinfo".to_string()],
+            "item info (iinfo) <uuid> - Show detailed item information".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_info_command,
+        );
+
+        // Item template commands (builder)
+        self.register_command_with_role(
+            "item spawn".to_string(),
+            vec!["ispawn".to_string()],
+            "item spawn (ispawn) <template> [quantity] - Spawn item(s) from template".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_spawn_command,
+        );
+        self.register_command_with_role(
+            "item templates".to_string(),
+            vec!["itemplates".to_string()],
+            "item templates (itemplates) [filter] - List available item templates".to_string(),
+            Some(AccountRole::Builder),
+            admin::item_templates_command,
+        );
+
+        // Help command - uses database-driven help system
         self.register_command(
             "help".to_string(),
-            vec!["?".to_string(), "commands".to_string()],
-            "help (?, commands) - Show this help".to_string(),
+            vec!["?".to_string()],
+            "help (?) [keyword|commands] - Show help information".to_string(),
             |_context, _entity, _cmd, _args| async {
                 // This handler is never called - help is handled specially in execute()
                 CommandResult::Success(String::new())
@@ -363,7 +903,9 @@ impl CommandSystem {
             "northeast".to_string(),
             vec!["ne".to_string()],
             "northeast (ne)     - Move northeast".to_string(),
-            |context, entity, _cmd, _args| Self::attempt_move(context, entity, "northeast".to_string()),
+            |context, entity, _cmd, _args| {
+                Self::attempt_move(context, entity, "northeast".to_string())
+            },
         );
 
         // Northwest
@@ -371,7 +913,9 @@ impl CommandSystem {
             "northwest".to_string(),
             vec!["nw".to_string()],
             "northwest (nw)     - Move northwest".to_string(),
-            |context, entity, _cmd, _args| Self::attempt_move(context, entity, "northwest".to_string()),
+            |context, entity, _cmd, _args| {
+                Self::attempt_move(context, entity, "northwest".to_string())
+            },
         );
 
         // Southeast
@@ -379,7 +923,9 @@ impl CommandSystem {
             "southeast".to_string(),
             vec!["se".to_string()],
             "southeast (se)     - Move southeast".to_string(),
-            |context, entity, _cmd, _args| Self::attempt_move(context, entity, "southeast".to_string()),
+            |context, entity, _cmd, _args| {
+                Self::attempt_move(context, entity, "southeast".to_string())
+            },
         );
 
         // Southwest
@@ -387,14 +933,20 @@ impl CommandSystem {
             "southwest".to_string(),
             vec!["sw".to_string()],
             "southwest (sw)     - Move southwest".to_string(),
-            |context, entity, _cmd, _args| Self::attempt_move(context, entity, "southwest".to_string()),
+            |context, entity, _cmd, _args| {
+                Self::attempt_move(context, entity, "southwest".to_string())
+            },
         );
     }
 
     /// Attempt to move an entity in a direction
     /// TODO: Handle Walk, Run, Crawl, and Fly
-    async fn attempt_move(context: Arc<WorldContext>, entity: EcsEntity, direction: String) -> CommandResult {
-        use crate::ecs::components::{Exits, ExitData, EntityUuid, Room};
+    async fn attempt_move(
+        context: Arc<WorldContext>,
+        entity: EcsEntity,
+        direction: String,
+    ) -> CommandResult {
+        use crate::ecs::components::{EntityUuid, ExitData, Exits, Room};
 
         // Normalize direction
         let normalized_direction = Self::normalize_direction(&direction);
@@ -439,7 +991,11 @@ impl CommandSystem {
             let exits = match world.get::<&Exits>(room_entity) {
                 Ok(exits) => exits,
                 Err(_) => {
-                    tracing::warn!("Room {:?} (UUID: {}) has no Exits component", room_entity, room_uuid);
+                    tracing::warn!(
+                        "Room {:?} (UUID: {}) has no Exits component",
+                        room_entity,
+                        room_uuid
+                    );
                     return CommandResult::Failure(format!(
                         "You try to go {}, but there are no exits here.",
                         direction
@@ -518,7 +1074,9 @@ impl CommandSystem {
         {
             let world_result = context.entities().try_write();
             if let Ok(mut world) = world_result {
-                for (_entity, commandable) in world.query_mut::<&mut crate::ecs::components::Commandable>() {
+                for (_entity, commandable) in
+                    world.query_mut::<&mut crate::ecs::components::Commandable>()
+                {
                     if let Some(cmd) = commandable.next_command() {
                         commands_to_execute.push((_entity, cmd.command, cmd.args));
                     }
@@ -537,8 +1095,8 @@ impl CommandSystem {
 mod tests {
     use super::*;
     use crate::ecs::components::{
-        BodyAttributes, Commandable, Container, Description, MindAttributes, Name, Room,
-        SoulAttributes, EntityId,
+        BodyAttributes, Commandable, Container, Description, EntityId, MindAttributes, Name, Room,
+        SoulAttributes,
     };
 
     // Helper function to create a test context with a mock world
@@ -657,5 +1215,3 @@ mod tests {
         // TODO: Convert to integration test with proper WorldEngineContext
     }
 }
-
-

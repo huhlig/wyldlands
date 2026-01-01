@@ -17,6 +17,7 @@
 use crate::ecs::components::EntityId;
 use crate::ecs::registry::EntityRegistry;
 use crate::ecs::EcsEntity;
+use crate::llm::LlmManager;
 use crate::persistence::PersistenceManager;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -92,6 +93,7 @@ pub struct WorldContext {
     entities: Arc<RwLock<hecs::World>>,
     registry: Arc<RwLock<EntityRegistry>>,
     persistence_manager: Arc<PersistenceManager>,
+    llm_manager: Arc<LlmManager>,
 }
 
 impl WorldContext {
@@ -101,6 +103,20 @@ impl WorldContext {
             entities: Arc::new(RwLock::new(hecs::World::new())),
             registry: Arc::new(RwLock::new(EntityRegistry::new())),
             persistence_manager,
+            llm_manager: Arc::new(LlmManager::new()),
+        }
+    }
+    
+    /// Create a new world engine context with a custom LLM manager
+    pub fn with_llm_manager(
+        persistence_manager: Arc<PersistenceManager>,
+        llm_manager: Arc<LlmManager>,
+    ) -> Self {
+        Self {
+            entities: Arc::new(RwLock::new(hecs::World::new())),
+            registry: Arc::new(RwLock::new(EntityRegistry::new())),
+            persistence_manager,
+            llm_manager,
         }
     }
 
@@ -119,8 +135,13 @@ impl WorldContext {
     }
 
     /// Get the persistence manager
-    pub fn persistence_manager(&self) -> &Arc<PersistenceManager> {
+    pub fn persistence(&self) -> &Arc<PersistenceManager> {
         &self.persistence_manager
+    }
+    
+    /// Get the LLM manager
+    pub fn llm_manager(&self) -> &Arc<LlmManager> {
+        &self.llm_manager
     }
 
     // ============================================================================

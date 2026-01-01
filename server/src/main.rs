@@ -16,6 +16,7 @@
 
 use clap::Parser;
 use futures::prelude::*;
+use sqlx::Executor;
 use std::net::SocketAddr;
 use tarpc::server::{BaseChannel, Channel};
 use tarpc::tokio_serde::formats::Bincode;
@@ -53,8 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration from a file with environment variable substitution
     let config: Configuration =
-        Configuration::load(&arguments.config_file)
-            .expect("Unable to load configuration file");
+        Configuration::load(&arguments.config_file).expect("Unable to load configuration file");
 
     tracing::debug!("Configuration loaded: {:?}", config);
     tracing::info!("Starting Wyldlands World Server...");
@@ -62,6 +62,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the database connection pool
     tracing::info!("Connecting to Database at {}", &config.database.url);
     let database = sqlx::postgres::PgPoolOptions::new()
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // Set the search path for this specific connection
+                conn.execute("SET search_path = wyldlands, public;").await?;
+                Ok(())
+            })
+        })
         .max_connections(5)
         .connect(&config.database.url)
         .await
@@ -74,9 +81,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Persistence manager initialized");
 
     // Create world engine context
-    let world_context = std::sync::Arc::new(
-        wyldlands_server::ecs::context::WorldContext::new(persistence_manager.clone()),
-    );
+    let world_context = std::sync::Arc::new(wyldlands_server::ecs::context::WorldContext::new(
+        persistence_manager.clone(),
+    ));
     tracing::info!("World engine context initialized");
 
     // Load all persistent entities from the database
@@ -144,5 +151,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 }
-
-

@@ -34,6 +34,7 @@ use crate::context::ServerContext;
 use crate::rpc_client::RpcClientManager;
 use axum::{Router, routing::get};
 use clap::Parser;
+use sqlx::Executor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -77,6 +78,13 @@ async fn main() {
     // Initialize the database connection pool
     info!("Connecting to Database at {}", &config.database.url);
     let database = sqlx::postgres::PgPoolOptions::new()
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // Set the search path for this specific connection
+                conn.execute("SET search_path = wyldlands, public;").await?;
+                Ok(())
+            })
+        })
         .max_connections(5)
         .connect(&config.database.url)
         .await

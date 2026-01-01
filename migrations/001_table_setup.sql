@@ -17,6 +17,10 @@ CREATE EXTENSION IF NOT EXISTS hstore;
 
 CREATE SCHEMA IF NOT EXISTS wyldlands;
 
+-- SET Search Path
+
+SET search_path TO wyldlands, public;
+
 --
 -- Name: settings; Type: TABLE; Schema: wyldlands; Owner: wyldlands
 --
@@ -40,6 +44,14 @@ COMMENT ON COLUMN wyldlands.settings.updated_at IS 'When property was updated';
 COMMENT ON COLUMN wyldlands.settings.updated_by IS 'Who last updated this property';
 
 --
+-- Name: account_role; Type: ENUM; Schema: wyldlands; Owner: wyldlands
+--
+
+CREATE TYPE wyldlands.account_role AS ENUM ('player', 'storyteller', 'builder', 'admin');
+
+COMMENT ON TYPE wyldlands.account_role IS 'Account role for access control';
+
+--
 -- Name: accounts; Type: TABLE; Schema: wyldlands; Owner: wyldlands
 -- Matches: common/src/account.rs::Account
 --
@@ -47,17 +59,17 @@ COMMENT ON COLUMN wyldlands.settings.updated_by IS 'Who last updated this proper
 CREATE TABLE wyldlands.accounts
 (
     id         UUID PRIMARY KEY,
-    login      VARCHAR     NOT NULL UNIQUE,
-    display    VARCHAR     NOT NULL,
-    password   VARCHAR     NOT NULL,
+    login      VARCHAR      NOT NULL UNIQUE,
+    display    VARCHAR      NOT NULL,
+    password   VARCHAR      NOT NULL,
     timezone   VARCHAR,
     discord    VARCHAR,
     email      VARCHAR,
-    rating     INT         NOT NULL DEFAULT 0,
-    active     BOOLEAN     NOT NULL DEFAULT TRUE,
-    admin      BOOLEAN     NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    rating     INT          NOT NULL DEFAULT 0,
+    active     BOOLEAN      NOT NULL DEFAULT TRUE,
+    role       account_role NOT NULL DEFAULT 'player',
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 COMMENT ON TABLE wyldlands.accounts IS 'Player Accounts';
@@ -70,42 +82,42 @@ COMMENT ON COLUMN wyldlands.accounts.discord IS 'Discord ID of the Account';
 COMMENT ON COLUMN wyldlands.accounts.email IS 'Email Address of the Account';
 COMMENT ON COLUMN wyldlands.accounts.rating IS 'Account Rating';
 COMMENT ON COLUMN wyldlands.accounts.active IS 'Account Status';
-COMMENT ON COLUMN wyldlands.accounts.admin IS 'Account Admin Status';
+COMMENT ON COLUMN wyldlands.accounts.role IS 'Account role (player, storyteller, builder, admin)';
 
 --
 -- Name: area_kind; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Kinds of Areas
 --
 
-CREATE TYPE area_kind AS ENUM ('Overworld', 'Vehicle', 'Building', 'Dungeon');
+CREATE TYPE wyldlands.area_kind AS ENUM ('Overworld', 'Vehicle', 'Building', 'Dungeon');
 
 --
 -- Name: area_flag; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Area Flags
 --
 
-CREATE TYPE area_flag AS ENUM ('Underwater');
+CREATE TYPE wyldlands.area_flag AS ENUM ('Underwater');
 
 --
 -- Name: room_flag; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Room Flags
 --
 
-CREATE TYPE room_flag AS ENUM ('Breathable');
+CREATE TYPE wyldlands.room_flag AS ENUM ('Breathable');
 
 --
 -- Name: size_class; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Entity Sizes Flags
 --
 
-CREATE TYPE size_class AS ENUM ('Fine', 'Diminutive', 'Tiny', 'Small', 'Medium', 'Large', 'Huge', 'Gargantuan', 'Colossal');
+CREATE TYPE wyldlands.size_class AS ENUM ('Fine', 'Diminutive', 'Tiny', 'Small', 'Medium', 'Large', 'Huge', 'Gargantuan', 'Colossal');
 
 --
 -- Name: slot_kind; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Entity Equipment Slots
 --
 
-CREATE TYPE slot_kind AS ENUM ('Head', 'Chest', 'Legs', 'Feet', 'Hands', 'MainHand', 'OffHand', 'Ring1',
+CREATE TYPE wyldlands.slot_kind AS ENUM ('Head', 'Chest', 'Legs', 'Feet', 'Hands', 'MainHand', 'OffHand', 'Ring1',
     'Ring2', 'Neck', 'Back', 'Tail', 'Wings');
 
 --
@@ -113,7 +125,7 @@ CREATE TYPE slot_kind AS ENUM ('Head', 'Chest', 'Legs', 'Feet', 'Hands', 'MainHa
 -- Enumeration of Damage Types
 --
 
-CREATE TYPE damage_type AS ENUM ('Blunt', 'Piercing', 'Slashing', 'Cold', 'Poison', 'Fire', 'Necrotic', 'Radiant',
+CREATE TYPE wyldlands.damage_type AS ENUM ('Blunt', 'Piercing', 'Slashing', 'Cold', 'Poison', 'Fire', 'Necrotic', 'Radiant',
     'Electric', 'Acid', 'Arcane', 'Psychic', 'Sonic', 'Force');
 
 --
@@ -121,7 +133,7 @@ CREATE TYPE damage_type AS ENUM ('Blunt', 'Piercing', 'Slashing', 'Cold', 'Poiso
 -- Enumeration of AI Behaviors
 --
 
-CREATE TYPE ai_behavior AS ENUM ('Passive', 'Wandering', 'Aggressive', 'Defensive', 'Friendly', 'Merchant',
+CREATE TYPE wyldlands.ai_behavior AS ENUM ('Passive', 'Wandering', 'Aggressive', 'Defensive', 'Friendly', 'Merchant',
     'Quest', 'Custom');
 
 --
@@ -129,21 +141,21 @@ CREATE TYPE ai_behavior AS ENUM ('Passive', 'Wandering', 'Aggressive', 'Defensiv
 -- Enumeration of AI States
 --
 
-CREATE TYPE ai_state AS ENUM ('Idle', 'Moving', 'Combat', 'Fleeing', 'Following', 'Dialogue');
+CREATE TYPE wyldlands.ai_state AS ENUM ('Idle', 'Moving', 'Combat', 'Fleeing', 'Following', 'Dialogue');
 
 --
 -- Name: session_state; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Session States
 --
 
-CREATE TYPE session_state AS ENUM ('Connecting', 'Authenticating', 'CharacterSelection', 'Playing', 'Disconnected', 'Closed');
+CREATE TYPE wyldlands.session_state AS ENUM ('Connecting', 'Authenticating', 'CharacterSelection', 'Playing', 'Disconnected', 'Closed');
 
 --
 -- Name: session_protocol; Type: ENUM; Schema: wyldlands; Owner: wyldlands
 -- Enumeration of Session Protocol
 --
 
-CREATE TYPE session_protocol AS ENUM ('Telnet', 'WebSocket');
+CREATE TYPE wyldlands.session_protocol AS ENUM ('Telnet', 'WebSocket');
 
 --
 -- Name: entities; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -1010,14 +1022,14 @@ CREATE TABLE wyldlands.starting_locations
 (
     id          VARCHAR(50) PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
-    description TEXT NOT NULL,
-    room_id     UUID NOT NULL,
-    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
-    sort_order  INT NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    description TEXT         NOT NULL,
+    room_id     UUID         NOT NULL,
+    enabled     BOOLEAN      NOT NULL DEFAULT TRUE,
+    sort_order  INT          NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_starting_location_room
-        FOREIGN KEY (room_id) REFERENCES wyldlands.entities(uuid)
+        FOREIGN KEY (room_id) REFERENCES wyldlands.entities (uuid)
             ON DELETE RESTRICT
 );
 
@@ -1079,6 +1091,81 @@ COMMENT ON COLUMN wyldlands.session_command_queue.id IS 'Queue entry ID';
 COMMENT ON COLUMN wyldlands.session_command_queue.session_id IS 'Associated session ID';
 COMMENT ON COLUMN wyldlands.session_command_queue.command IS 'Queued command text';
 COMMENT ON COLUMN wyldlands.session_command_queue.queued_at IS 'Time command was queued';
+
+
+--
+-- Name: help_category; Type: ENUM; Schema: wyldlands; Owner: wyldlands
+-- Categories for help topics
+--
+
+CREATE TYPE help_category AS ENUM (
+    'Command',
+    'Skill',
+    'Talent',
+    'Spell',
+    'Combat',
+    'Building',
+    'Social',
+    'System',
+    'Lore',
+    'General'
+    );
+
+--
+-- Name: help_topics; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+-- Help topics for commands, skills, talents, etc.
+--
+
+CREATE TABLE wyldlands.help_topics
+(
+    keyword      VARCHAR(100) PRIMARY KEY,
+    category     help_category NOT NULL,
+    title        VARCHAR(200)  NOT NULL,
+    content      TEXT          NOT NULL,
+    syntax       TEXT,
+    examples     TEXT,
+    see_also     TEXT[],
+    min_role     account_role  NOT NULL DEFAULT 'player',
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    created_by   UUID,
+    updated_by   UUID
+);
+
+COMMENT ON TABLE wyldlands.help_topics IS 'Help topics for commands, skills, talents, and other game features';
+COMMENT ON COLUMN wyldlands.help_topics.keyword IS 'Primary keyword for this help topic (lowercase)';
+COMMENT ON COLUMN wyldlands.help_topics.category IS 'Category of help topic';
+COMMENT ON COLUMN wyldlands.help_topics.title IS 'Display title for the help topic';
+COMMENT ON COLUMN wyldlands.help_topics.content IS 'Main help content/description';
+COMMENT ON COLUMN wyldlands.help_topics.syntax IS 'Command syntax or usage pattern';
+COMMENT ON COLUMN wyldlands.help_topics.examples IS 'Usage examples';
+COMMENT ON COLUMN wyldlands.help_topics.see_also IS 'Related help topics';
+COMMENT ON COLUMN wyldlands.help_topics.min_role IS 'Minimum account role required to see this help (player, storyteller, builder, admin)';
+COMMENT ON COLUMN wyldlands.help_topics.created_at IS 'When help topic was created';
+COMMENT ON COLUMN wyldlands.help_topics.updated_at IS 'When help topic was last updated';
+COMMENT ON COLUMN wyldlands.help_topics.created_by IS 'Who created this help topic';
+COMMENT ON COLUMN wyldlands.help_topics.updated_by IS 'Who last updated this help topic';
+
+--
+-- Name: help_aliases; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+-- Aliases for help topics (allows multiple keywords to point to same help)
+--
+
+CREATE TABLE wyldlands.help_aliases
+(
+    alias      VARCHAR(100) PRIMARY KEY,
+    keyword    VARCHAR(100) NOT NULL REFERENCES wyldlands.help_topics (keyword) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE wyldlands.help_aliases IS 'Aliases that redirect to help topics';
+COMMENT ON COLUMN wyldlands.help_aliases.alias IS 'Alias keyword (lowercase)';
+COMMENT ON COLUMN wyldlands.help_aliases.keyword IS 'Primary keyword this alias points to';
+
+-- Create indexes for better search performance
+CREATE INDEX idx_help_topics_category ON wyldlands.help_topics (category);
+CREATE INDEX idx_help_topics_admin_only ON wyldlands.help_topics (admin_only);
+CREATE INDEX idx_help_aliases_keyword ON wyldlands.help_aliases (keyword);
 
 COMMIT;
 

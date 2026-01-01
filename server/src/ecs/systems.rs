@@ -23,6 +23,8 @@ mod movement;
 mod command;
 mod inventory;
 mod combat;
+mod npc_ai;
+mod actions;
 pub mod persistence;
 
 // Re-export all systems
@@ -30,6 +32,8 @@ pub use movement::*;
 pub use command::*;
 pub use inventory::*;
 pub use combat::*;
+pub use npc_ai::*;
+pub use actions::*;
 pub use persistence::*;
 
 

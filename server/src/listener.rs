@@ -296,7 +296,7 @@ impl GatewayServer for ServerRpcHandler {
 
             // Save the entity to database
             self.world_context
-                .persistence_manager()
+                .persistence()
                 .save_character(&world, ecs_entity)
                 .await
                 .map_err(|e| {
@@ -390,7 +390,7 @@ impl GatewayServer for ServerRpcHandler {
                 let registry = self.world_context.registry().read().await;
                 let ecs_entity = self
                     .world_context
-                    .persistence_manager()
+                    .persistence()
                     .load_character(&mut world, &registry, avatar_id)
                     .await
                     .map_err(|e| {
@@ -550,7 +550,7 @@ impl GatewayServer for ServerRpcHandler {
                         // Save the character before unloading
                         if let Err(e) = self
                             .world_context
-                            .persistence_manager()
+                            .persistence()
                             .save_character(&world, entity_id.entity())
                             .await
                         {

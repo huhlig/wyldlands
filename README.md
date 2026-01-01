@@ -5,7 +5,11 @@
 
 ([API Docs])
 
-> Wyldlands Multi-Player Dimension (WyldMPD) is a web-based multiplayer adventure descended from classics like DikuMUD.
+> Wyldlands Multi-User Dimension (WyldMUD) is an experimental vibe coded multiplayer adventure simulation inspired by 
+> classic Multi-User Dimensions like DikuMUD and TinyMuck. It is an experiment in both the usage of agentic application
+> creation and usage of LLMs in a fantasy virtual world simulation. Its core design is modular with a reasonable 
+> framework for extension. The default AI is a mixture of a Goal Oriented Action Planning statechart with an LLM used 
+> to make decisions.
 
 ## Quick Start
 
@@ -16,9 +20,6 @@ The easiest way to run Wyldlands is using Docker Compose:
 ```bash
 # Start all services (PostgreSQL, world server, gateway)
 docker-compose up --build
-
-# Or use the Makefile
-make up
 ```
 
 Once running, connect to:
@@ -128,12 +129,15 @@ cat docs/development/PROJECT_STATUS.md
 
 ### Development Status
 
-See [docs/development/PROJECT_STATUS.md](docs/development/PROJECT_STATUS.md) for current progress.
+See [docs/development/PROJECT_STATUS.md](docs/development/PROJECT_STATUS.md) for detailed progress.
 
-**Phase 1 (Complete)**: Basic gateway with WebSocket/Telnet support  
-**Phase 2 (In Progress)**: Session management and reconnection  
-**Phase 3 (Planned)**: World server integration  
-**Phase 4 (Planned)**: Content and gameplay systems
+**Phase 1 (✅ Complete)**: Core ECS Implementation - 25+ components, 5 systems, event bus
+**Phase 2 (✅ Complete)**: Gateway & Connection Persistence - Session mgmt, protocols, RPC
+**Phase 3 (📋 Planned)**: GOAP AI System - Goal-oriented action planning
+**Phase 4 (📋 Planned)**: LLM Integration - Dynamic NPC dialogue
+**Phase 5 (📋 Planned)**: Integration & Polish - Complete gameplay systems
+
+**Overall Progress**: 40% (2 of 5 phases complete)
 
 ## Contributing
 

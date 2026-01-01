@@ -8,3 +8,30 @@ database:
 listener:
   addr: ${WYLDLANDS_LISTENER_ADDR:-0.0.0.0:6006}
   auth_key: ${WYLDLANDS_AUTH_KEY:-default-secret-key-change-in-production}
+
+# LLM Configuration for NPC dialogue and content generation
+llm:
+  # Default provider to use (openai, ollama, lmstudio)
+  default_provider: ${WYLDLANDS_LLM_PROVIDER:-ollama}
+  
+  # OpenAI Configuration
+  openai:
+    api_key: ${OPENAI_API_KEY:-}
+    model: ${OPENAI_MODEL:-gpt-4}
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+  
+  # Ollama Configuration (local LLM)
+  ollama:
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+    model: ${OLLAMA_MODEL:-llama2}
+  
+  # LM Studio Configuration (local LLM with OpenAI-compatible API)
+  lmstudio:
+    base_url: ${LMSTUDIO_BASE_URL:-http://localhost:1234/v1}
+    model: ${LMSTUDIO_MODEL:-local-model}
+  
+  # Generation settings
+  generation:
+    temperature: ${LLM_TEMPERATURE:-0.8}
+    max_tokens: ${LLM_MAX_TOKENS:-500}
+    timeout_seconds: ${LLM_TIMEOUT:-30}

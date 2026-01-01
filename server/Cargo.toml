@@ -14,13 +14,16 @@ categories.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 clap.workspace = true
 dotenv.workspace = true
 flagset.workspace = true
 futures.workspace = true
 hecs.workspace = true
 once_cell.workspace = true
+rand.workspace = true
 regex.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

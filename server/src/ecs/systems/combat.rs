@@ -17,7 +17,10 @@
 //! Combat system for fighting mechanics
 
 use crate::ecs::{GameWorld, EcsEntity};
-use crate::ecs::components::{Combatant, BodyAttributes, Equipment, EquipSlot, EntityUuid, EntityId};
+use crate::ecs::components::{
+    Combatant, BodyAttributes, Equipment, EquipSlot, EntityUuid, EntityId,
+    StatusEffects, StatusEffect, StatusEffectType
+};
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::registry::EntityRegistry;
 use std::collections::HashMap;
@@ -268,6 +271,108 @@ impl CombatSystem {
         initiative += (rand::random::<f32>() * 10.0) as i32;
         
         initiative
+    }
+
+    /// Start defending - increases defense for one round
+    pub fn defend(&mut self, world: &mut GameWorld, entity: EcsEntity) -> Result<(), String> {
+        // Calculate defense bonus based on attributes
+        let defense_bonus = if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+            5 + (attrs.score_defence - 10) / 2
+        } else {
+            5
+        };
+
+        // Set defending state
+        if let Ok(mut combatant) = world.get::<&mut Combatant>(entity) {
+            combatant.start_defending(defense_bonus);
+        } else {
+            return Err("Entity is not a combatant".to_string());
+        }
+
+        // Add defending status effect
+        if let Ok(mut status_effects) = world.get::<&mut StatusEffects>(entity) {
+            status_effects.add_effect(StatusEffect::new(
+                StatusEffectType::Defending,
+                1.0, // Lasts one round
+                defense_bonus,
+            ));
+        } else {
+            // Create status effects component if it doesn't exist
+            let mut status_effects = StatusEffects::new();
+            status_effects.add_effect(StatusEffect::new(
+                StatusEffectType::Defending,
+                1.0,
+                defense_bonus,
+            ));
+            world.insert_one(entity, status_effects)
+                .map_err(|e| format!("Failed to add status effects: {}", e))?;
+        }
+
+        self.event_bus.publish(GameEvent::EntityDefended { entity });
+        Ok(())
+    }
+
+    /// Attempt to flee from combat
+    pub fn flee(&mut self, world: &mut GameWorld, entity: EcsEntity) -> Result<bool, String> {
+        // Check if entity is in combat
+        let in_combat = if let Ok(combatant) = world.get::<&Combatant>(entity) {
+            combatant.in_combat
+        } else {
+            return Err("Entity is not a combatant".to_string());
+        };
+
+        if !in_combat {
+            return Err("Entity is not in combat".to_string());
+        }
+
+        // Calculate flee chance based on finesse
+        let flee_chance = if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+            0.5 + (attrs.score_finesse as f32 - 10.0) * 0.02
+        } else {
+            0.5
+        };
+
+        // Check for status effects that prevent fleeing
+        if let Ok(status_effects) = world.get::<&StatusEffects>(entity) {
+            if status_effects.has_effect(StatusEffectType::Stunned) {
+                return Ok(false);
+            }
+        }
+
+        // Roll for flee success
+        let success = rand::random::<f32>() < flee_chance;
+
+        if success {
+            // End combat for this entity
+            self.end_combat(world, entity);
+            self.event_bus.publish(GameEvent::EntityFled { entity });
+        }
+
+        Ok(success)
+    }
+
+    /// Update status effects for all entities
+    pub fn update_status_effects(&mut self, world: &mut GameWorld, delta_time: f32) {
+        let mut expired_defending: Vec<EcsEntity> = Vec::new();
+
+        // Update all status effects
+        for (entity, status_effects) in world.query_mut::<&mut StatusEffects>() {
+            status_effects.update(delta_time);
+
+            // Check if defending expired
+            if !status_effects.has_effect(StatusEffectType::Defending) {
+                expired_defending.push(entity);
+            }
+        }
+
+        // Remove defending state from combatants whose effect expired
+        for entity in expired_defending {
+            if let Ok(mut combatant) = world.get::<&mut Combatant>(entity) {
+                if combatant.is_defending {
+                    combatant.stop_defending();
+                }
+            }
+        }
     }
 }
 

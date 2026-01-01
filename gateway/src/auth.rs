@@ -92,14 +92,20 @@ impl AuthManager {
     
     /// Authenticate a user with username and password
     pub async fn authenticate(&self, username: &str, password: &str) -> Result<Account, String> {
+        // Validate inputs to prevent SQL injection and timing attacks
+        if username.is_empty() || password.is_empty() {
+            return Err("Invalid username or password".to_string());
+        }
+        
         // Fetch account and verify password using pgcrypto's crypt()
         // This compares the provided password against the stored bcrypt hash
         // Note: password field is NOT selected for security
         let account: Option<Account> = sqlx::query_as(
-            "SELECT id, login, display, timezone, discord, email, active, rating, admin
+            "SELECT id, login, display, timezone, discord, email, active, rating, admin, role
              FROM wyldlands.accounts
              WHERE LOWER(login) = LOWER($1)
-             AND password = crypt($2, password)"
+             AND password = crypt($2, password)
+             AND active = true"
         )
         .bind(username)
         .bind(password)
@@ -109,7 +115,7 @@ impl AuthManager {
         
         let account = account.ok_or_else(|| "Invalid username or password".to_string())?;
         
-        // Check if account is active
+        // Double-check account is active (defense in depth)
         if !account.active {
             return Err("Account is disabled".to_string());
         }
@@ -120,7 +126,7 @@ impl AuthManager {
     /// Get account by ID
     pub async fn get_account_by_id(&self, account_id: Uuid) -> Result<Account, String> {
         let account: Option<Account> = sqlx::query_as(
-            "SELECT id, login, display, timezone, discord, email, active, rating, admin
+            "SELECT id, login, display, timezone, discord, email, active, rating, admin, role
              FROM wyldlands.accounts
              WHERE id = $1"
         )
@@ -274,9 +280,9 @@ impl AuthManager {
         let account_id = Uuid::new_v4();
         let account: Account = sqlx::query_as(
             "INSERT INTO wyldlands.accounts
-             (id, login, display, password, email, active, admin)
-             VALUES ($1, $2, $3, crypt($4, gen_salt('bf')), $5, true, false)
-             RETURNING id, login, display, timezone, discord, email, rating, active, admin"
+             (id, login, display, password, email, active, admin, role)
+             VALUES ($1, $2, $3, crypt($4, gen_salt('bf')), $5, true, false, 'player')
+             RETURNING id, login, display, timezone, discord, email, rating, active, admin, role"
         )
         .bind(account_id)
         .bind(&request.username)

@@ -23,6 +23,100 @@ use std::collections::HashMap;
 #[cfg(test)]
 use uuid::Uuid;
 
+/// Status effect types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StatusEffectType {
+    Stunned,
+    Poisoned,
+    Burning,
+    Bleeding,
+    Defending,
+    Weakened,
+    Strengthened,
+    Slowed,
+    Hasted,
+}
+
+impl StatusEffectType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StatusEffectType::Stunned => "Stunned",
+            StatusEffectType::Poisoned => "Poisoned",
+            StatusEffectType::Burning => "Burning",
+            StatusEffectType::Bleeding => "Bleeding",
+            StatusEffectType::Defending => "Defending",
+            StatusEffectType::Weakened => "Weakened",
+            StatusEffectType::Strengthened => "Strengthened",
+            StatusEffectType::Slowed => "Slowed",
+            StatusEffectType::Hasted => "Hasted",
+        }
+    }
+}
+
+/// Individual status effect
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusEffect {
+    pub effect_type: StatusEffectType,
+    pub duration: f32,
+    pub magnitude: i32,
+}
+
+impl StatusEffect {
+    pub fn new(effect_type: StatusEffectType, duration: f32, magnitude: i32) -> Self {
+        Self {
+            effect_type,
+            duration,
+            magnitude,
+        }
+    }
+}
+
+/// Status effects component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusEffects {
+    pub effects: Vec<StatusEffect>,
+}
+
+impl StatusEffects {
+    pub fn new() -> Self {
+        Self {
+            effects: Vec::new(),
+        }
+    }
+
+    pub fn add_effect(&mut self, effect: StatusEffect) {
+        // Remove existing effect of same type
+        self.effects.retain(|e| e.effect_type != effect.effect_type);
+        self.effects.push(effect);
+    }
+
+    pub fn remove_effect(&mut self, effect_type: StatusEffectType) {
+        self.effects.retain(|e| e.effect_type != effect_type);
+    }
+
+    pub fn has_effect(&self, effect_type: StatusEffectType) -> bool {
+        self.effects.iter().any(|e| e.effect_type == effect_type)
+    }
+
+    pub fn get_effect(&self, effect_type: StatusEffectType) -> Option<&StatusEffect> {
+        self.effects.iter().find(|e| e.effect_type == effect_type)
+    }
+
+    pub fn update(&mut self, delta_time: f32) {
+        // Update durations and remove expired effects
+        for effect in &mut self.effects {
+            effect.duration -= delta_time;
+        }
+        self.effects.retain(|e| e.duration > 0.0);
+    }
+}
+
+impl Default for StatusEffects {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Combat state component
 /// Maps to: entity_combatant table
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +126,8 @@ pub struct Combatant {
     pub initiative: i32,
     pub action_cooldown: f32,
     pub time_since_action: f32,
+    pub is_defending: bool,
+    pub defense_bonus: i32,
 }
 
 impl Combatant {
@@ -43,6 +139,8 @@ impl Combatant {
             initiative: 0,
             action_cooldown: 1.0,
             time_since_action: 1.0,
+            is_defending: false,
+            defense_bonus: 0,
         }
     }
     
@@ -59,6 +157,18 @@ impl Combatant {
     /// Reset attack timer
     pub fn reset_timer(&mut self) {
         self.time_since_action = 0.0;
+    }
+
+    /// Start defending
+    pub fn start_defending(&mut self, bonus: i32) {
+        self.is_defending = true;
+        self.defense_bonus = bonus;
+    }
+
+    /// Stop defending
+    pub fn stop_defending(&mut self) {
+        self.is_defending = false;
+        self.defense_bonus = 0;
     }
 }
 
