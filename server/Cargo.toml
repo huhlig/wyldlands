@@ -1,0 +1,42 @@
+[package]
+name = "wyldlands-server"
+description = "Wyldlans Multi-Player Dimension World Server Engine."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+documentation.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+dotenv.workspace = true
+flagset.workspace = true
+futures.workspace = true
+hecs.workspace = true
+once_cell.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+serde-env-field.workspace = true
+sqlx.workspace = true
+tarpc.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+wyldlands-common = { workspace = true, features = ["sqlx"] }
+
+[dev-dependencies]
+criterion.workspace = true
+mockall.workspace = true
+sqlx.workspace = true
+tempfile = "3"
+tokio-test.workspace = true

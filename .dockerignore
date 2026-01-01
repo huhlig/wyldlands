@@ -1,0 +1,50 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# Note: tests/ and benches/ are needed because Cargo.toml references them
+# They won't be included in the final image (only in builder stage)
+
+# Environment files (use docker-compose env instead)
+gateway.env
+.env.*
+!.env.example
+
+# Docker files (not needed in container)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database files
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/

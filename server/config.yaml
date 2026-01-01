@@ -1,0 +1,10 @@
+# Server Configuration
+
+database:
+  url: ${WYLDLANDS_DATABASE_URL:-postgres://postgres:wyldlands@localhost:5432/postgres}
+  username: ${WYLDLANDS_DATABASE_USERNAME:-postgres}
+  password: ${WYLDLANDS_DATABASE_PASSWORD:-wyldlands}
+
+listener:
+  addr: ${WYLDLANDS_LISTENER_ADDR:-0.0.0.0:6006}
+  auth_key: ${WYLDLANDS_AUTH_KEY:-default-secret-key-change-in-production}

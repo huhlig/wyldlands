@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wyldlands MUD Client</title>
+    <link rel="stylesheet" href="client.css">
+    <script src="client.js"></script>
+</head>
+<body>
+<div id="wyldlands">
+    <div id="wyldlands-header">
+        <span class="status disconnected">○</span> Wyldlands MUD Client
+    </div>
+    <div id="wyldlands-topleft">
+        <h3>Map</h3>
+        <canvas id="wyldlands-map"></canvas>
+    </div>
+    <div id="wyldlands-topright">
+        <h3>Character</h3>
+        <div id="wyldlands-inventory">
+            <h4>Inventory</h4>
+            <p>Empty</p>
+        </div>
+        <div id="wyldlands-attributes">
+            <h4>Attributes</h4>
+            <p>Not loaded</p>
+        </div>
+    </div>
+    <div id="wyldlands-bottomleft">
+        <h3>Statistics</h3>
+        <div id="wyldlands-statistics">
+            <p>No data</p>
+        </div>
+    </div>
+    <div id="wyldlands-bottomright">
+        <h3>Info</h3>
+        <p>Additional information will appear here.</p>
+    </div>
+    <div id="wyldlands-center">
+        <div id="wyldlands-console"></div>
+    </div>
+    <div id="wyldlands-footer">
+        <!-- Input field will be dynamically inserted here -->
+    </div>
+</div>
+</body>
+</html>

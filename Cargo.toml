@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "common",
+    "gateway",
+    "server",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+publish = false
+keywords = ["mud"]
+readme = "README.md"
+license = "APACHE2 or MIT"
+description = "Wyldlands Multi-Player Dimension (MAD) is a web-based multiplayer adventure descended from classics like DikuMUD."
+authors = ["Hans W. Uhlig <huhlig@gmail.com>"]
+documentation = "https://huhlig.github.io/wyldlands"
+homepage = "https://huhlig.github.io/wyldlands"
+repository = "https://github.com/huhlig/wyldlands"
+categories = ["simulation"]
+
+[workspace.dependencies]
+async-trait = { version = "0.1" }
+anyhow = { version = "1", features = ["default"] }
+axum = { version = "0.8", features = ["tracing", "ws"] }
+base64 = { version = "0.22" }
+bytes = { version = "1", features = ["default"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
+dotenv = { version = "0.15", features = ["clap"] }
+flagset = { version = "0.4", features = ["serde"] }
+futures = { version = "0.3", features = ["default"] }
+hecs = { version = "0.10", features = ["serde"] }
+mockall = { version = "0.14" }
+once_cell = { version = "1.20" }
+rand = { version = "0.9", features = ["default"] }
+regex = { version = "1", features = ["default"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+serde_yaml = { version = "0.9", features = [] }
+serde-env-field = { version = "0.4" }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "tls-rustls", "uuid", "chrono", "migrate"] }
+tarpc = { version = "0.37", features = ["full", "serde-transport-bincode", "tokio-serde", "tokio1"] }
+termionix-service = { git = "https://github.com/huhlig/termionix", branch = "master" }
+tokio = { version = "1", features = ["rt-multi-thread", "tracing", "net", "test-util", "macros"] }
+tokio-test = { version = "0.4" }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = { version = "0.1", features = ["default"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-test = { version = "0.2" }
+tracing-timing = { version = "0.7" }
+uuid = { version = "1", features = ["serde", "v4"] }
+wyldlands-common = { path = "common" }
+wyldlands-gateway = { path = "gateway" }
+wyldlands-server = { path = "server" }
