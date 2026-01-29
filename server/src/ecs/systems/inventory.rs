@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 //! Inventory system for item management
 
-use crate::ecs::components::{Containable, Container, Location, EntityId};
+use crate::ecs::components::{Containable, Container, EntityId, Location};
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::{EcsEntity, GameWorld};
 
@@ -162,7 +162,7 @@ impl InventorySystem {
     pub fn get_total_weight(&self, world: &GameWorld, _entity: EcsEntity) -> f32 {
         // Sum weight of items with nil location (in inventory)
         let mut total_weight = 0.0;
-        for (_e, (loc, containable)) in world.query::<(&Location, &Containable)>().iter() {
+        for (loc, containable) in world.query::<(&Location, &Containable)>().iter() {
             if loc.area_id.uuid() == uuid::Uuid::nil() && loc.room_id.uuid() == uuid::Uuid::nil() {
                 total_weight += containable.weight;
             }
@@ -174,7 +174,7 @@ impl InventorySystem {
     pub fn get_item_count(&self, world: &GameWorld, _entity: EcsEntity) -> usize {
         // Count items with nil location (in inventory)
         let mut count = 0;
-        for (_e, loc) in world.query::<&Location>().iter() {
+        for loc in world.query::<&Location>().iter() {
             if loc.area_id.uuid() == uuid::Uuid::nil() && loc.room_id.uuid() == uuid::Uuid::nil() {
                 count += 1;
             }
@@ -204,8 +204,12 @@ mod tests {
             Name::new("Player"),
             Container::new(Some(10)),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -213,8 +217,12 @@ mod tests {
             Name::new("Sword"),
             Containable::new(5.0),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -246,8 +254,12 @@ mod tests {
             Name::new("Sword"),
             Containable::new(5.0),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -274,8 +286,12 @@ mod tests {
             Name::new("Player"),
             Container::new(Some(2)),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -283,8 +299,12 @@ mod tests {
             Name::new("Item1"),
             Containable::new(1.0),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -292,8 +312,12 @@ mod tests {
             Name::new("Item2"),
             Containable::new(1.0),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -301,8 +325,12 @@ mod tests {
             Name::new("Item3"),
             Containable::new(1.0),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -324,8 +352,12 @@ mod tests {
             Name::new("Player"),
             container,
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
@@ -333,13 +365,15 @@ mod tests {
             Name::new("Heavy"),
             Containable::new(15.0),
             Location::new(
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap()),
-                EntityId::from_uuid(uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000000").unwrap(),
+                ),
+                EntityId::from_uuid(
+                    uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
+                ),
             ),
         ));
 
         assert!(system.pickup_item(&mut world, player, heavy_item).is_err());
     }
 }
-
-

@@ -1164,9 +1164,8 @@ COMMENT ON COLUMN wyldlands.help_aliases.keyword IS 'Primary keyword this alias 
 
 -- Create indexes for better search performance
 CREATE INDEX idx_help_topics_category ON wyldlands.help_topics (category);
-CREATE INDEX idx_help_topics_admin_only ON wyldlands.help_topics (admin_only);
+CREATE INDEX idx_help_topics_min_role ON wyldlands.help_topics (min_role);
 CREATE INDEX idx_help_aliases_keyword ON wyldlands.help_aliases (keyword);
 
 COMMIT;
 
--- Made with Bob

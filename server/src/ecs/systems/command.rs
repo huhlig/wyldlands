@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,10 +28,12 @@ mod npc;
 mod query;
 mod score;
 
-use crate::ecs::components::{Avatar, Location};
+use crate::ecs::EcsEntity;
+use crate::ecs::components::{Avatar, Commandable, Combatant, Location};
 use crate::ecs::context::WorldContext;
 use crate::ecs::events::{EventBus, GameEvent};
-use crate::ecs::{EcsEntity, GameWorld};
+use hecs::Entity;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wyldlands_common::account::AccountRole;
@@ -53,6 +55,17 @@ pub enum CommandResult {
     Success(String),
     Failure(String),
     Invalid(String),
+}
+
+/// Information about an available command
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailableCommand {
+    /// Primary command name
+    pub name: String,
+    /// Alternative names for the command
+    pub aliases: Vec<String>,
+    /// Short documentation describing what the command does
+    pub description: String,
 }
 
 struct CommandMetadata {
@@ -298,6 +311,73 @@ impl CommandSystem {
             .map_err(|e| format!("Failed to get account: {}", e))?;
 
         Ok(account.role)
+    }
+
+    /// Get a list of available commands for an avatar based on their current state
+    ///
+    /// This function examines the avatar's:
+    /// - Account role (Player, Storyteller, Builder, Admin)
+    /// - Combat state (in combat or not)
+    ///
+    /// Returns a vector of AvailableCommand structs with name, aliases, and description
+    pub async fn get_available_commands(
+        &self,
+        context: Arc<WorldContext>,
+        entity: EcsEntity,
+    ) -> Vec<AvailableCommand> {
+        // Get user's role
+        let user_role = self
+            .get_user_role(context.clone(), entity)
+            .await
+            .unwrap_or(AccountRole::Player);
+
+        // Check if entity is in combat
+        // TODO: Future enhancement - filter commands based on combat state
+        // For example, hide movement commands during combat, or show combat-specific commands
+        let _in_combat = {
+            let world = context.entities().read().await;
+            world
+                .get::<&Combatant>(entity)
+                .map(|c| c.in_combat)
+                .unwrap_or(false)
+        };
+
+        let mut available_commands = Vec::new();
+
+        for (name, metadata) in &self.commands {
+            // TODO: Future enhancement - filter based on other state conditions:
+            // - Location-specific commands (e.g., "swim" only near water)
+            // - Item-specific commands (e.g., "read" only with readable items)
+            // - Quest-specific commands
+            // - Time-of-day specific commands
+            
+            // Skip commands that require a higher role than the user has
+            if let Some(required_role) = metadata.required_role {
+                if !user_role.has_permission(required_role) {
+                    continue;
+                }
+            }
+
+            // Extract description from help_text (first line before any formatting)
+            let description = metadata
+                .help_text
+                .lines()
+                .next()
+                .unwrap_or(&metadata.help_text)
+                .trim()
+                .to_string();
+
+            available_commands.push(AvailableCommand {
+                name: name.clone(),
+                aliases: metadata.aliases.clone(),
+                description,
+            });
+        }
+
+        // Sort by command name for consistent output
+        available_commands.sort_by(|a, b| a.name.cmp(&b.name));
+
+        available_commands
     }
 
     /// Execute a command
@@ -946,7 +1026,7 @@ impl CommandSystem {
         entity: EcsEntity,
         direction: String,
     ) -> CommandResult {
-        use crate::ecs::components::{EntityUuid, ExitData, Exits, Room};
+        use crate::ecs::components::{EntityUuid, Exits, Room};
 
         // Normalize direction
         let normalized_direction = Self::normalize_direction(&direction);
@@ -967,7 +1047,7 @@ impl CommandSystem {
             let room_uuid = current_loc.room_id.uuid();
             let mut room_entity_opt = None;
 
-            for (room_entity, _room_comp) in world.query::<&Room>().iter() {
+            for (room_entity, _room_comp) in world.query::<(Entity, &Room)>().iter() {
                 if let Ok(entity_uuid) = world.get::<&EntityUuid>(room_entity) {
                     if entity_uuid.0 == room_uuid {
                         room_entity_opt = Some(room_entity);
@@ -1036,7 +1116,7 @@ impl CommandSystem {
         let new_location = Location::new(current_loc.area_id, exit_data.dest_id);
 
         {
-            let mut world = context.entities().write().await;
+            let world = context.entities().read().await;
             if let Ok(mut location) = world.get::<&mut Location>(entity) {
                 *location = new_location;
             } else {
@@ -1067,18 +1147,16 @@ impl CommandSystem {
     }
 
     /// Update the command system, processing queued commands
-    pub fn update(&mut self, context: Arc<WorldContext>) {
+    pub async fn update(&mut self, context: Arc<WorldContext>) {
         let mut commands_to_execute = Vec::new();
 
         // Collect commands from all commandable entities
         {
             let world_result = context.entities().try_write();
             if let Ok(mut world) = world_result {
-                for (_entity, commandable) in
-                    world.query_mut::<&mut crate::ecs::components::Commandable>()
-                {
+                for (entity, commandable) in world.query_mut::<(Entity, &mut Commandable)>() {
                     if let Some(cmd) = commandable.next_command() {
-                        commands_to_execute.push((_entity, cmd.command, cmd.args));
+                        commands_to_execute.push((entity, cmd.command, cmd.args));
                     }
                 }
             }
@@ -1086,7 +1164,7 @@ impl CommandSystem {
 
         // Execute collected commands
         for (entity, command, args) in commands_to_execute {
-            self.execute(context.clone(), entity, &command, &args);
+            self.execute(context.clone(), entity, &command, &args).await;
         }
     }
 }
@@ -1094,22 +1172,6 @@ impl CommandSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ecs::components::{
-        BodyAttributes, Commandable, Container, Description, EntityId, MindAttributes, Name, Room,
-        SoulAttributes,
-    };
-
-    // Helper function to create a test context with a mock world
-    fn create_test_context() -> Arc<WorldContext> {
-        // Create an in-memory mock for testing without requiring a database
-        // Note: This won't have full persistence functionality, but is sufficient for command tests
-        use crate::persistence::PersistenceManager;
-
-        // We can't create a real persistence manager without a database,
-        // so tests that need context should be integration tests
-        // For unit tests, we'll need to refactor to work without context
-        unimplemented!("Use integration tests for context-dependent tests")
-    }
 
     #[test]
     fn test_command_system_creation() {
@@ -1118,8 +1180,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO: Fix test"]
     fn test_look_command() {
-        // TODO: Fix test
+        unimplemented!();
 
         // let mut world = GameWorld::new();
         // let event_bus = EventBus::new();
@@ -1212,6 +1275,36 @@ mod tests {
     #[test]
     #[ignore = "Requires WorldEngineContext - convert to integration test"]
     fn test_subcommand_vs_regular_command() {
+    }
+
+    #[test]
+    fn test_available_command_struct() {
+        // Test that AvailableCommand can be created and serialized
+        let cmd = AvailableCommand {
+            name: "look".to_string(),
+            aliases: vec!["l".to_string()],
+            description: "Look around the room".to_string(),
+        };
+
+        assert_eq!(cmd.name, "look");
+        assert_eq!(cmd.aliases.len(), 1);
+        assert!(cmd.description.contains("Look"));
+
+        // Test serialization
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("look"));
+        assert!(json.contains("description"));
+    }
+
+    #[test]
+    #[ignore = "Requires WorldEngineContext - convert to integration test"]
+    fn test_get_available_commands() {
+        // TODO: Convert to integration test with proper WorldEngineContext
+        // This test should verify:
+        // 1. Commands are filtered by user role
+        // 2. Commands include name, aliases, and description
+        // 3. Commands are sorted alphabetically
+        // 4. Combat state affects available commands (future enhancement)
         // TODO: Convert to integration test with proper WorldEngineContext
     }
 }

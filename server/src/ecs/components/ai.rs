@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -137,6 +137,426 @@ impl AIController {
     pub fn update_timer(&mut self, delta_time: f32) {
         self.time_since_update += delta_time;
     }
+}
+
+/// Emotional State Assessment System (ESAS)
+///
+/// A dimensional model for representing current emotional states in AI simulations,
+/// based on the Scale of Positive and Negative Experience (SPANE) and the Positive
+/// and Negative Affect Schedule (PANAS).
+///
+/// # Core Principles
+///
+/// **State vs. Trait**: These dimensions measure transient emotional *states* that
+/// fluctuate over time, not stable personality *traits*. Values should be updated
+/// dynamically in response to events, interactions, and context.
+///
+/// **Independence**: Dimensions are not mutually exclusive. An entity can simultaneously
+/// experience high positive valence and high negative valence (mixed emotions), or high
+/// arousal with either positive or negative valence.
+///
+/// **Measurement Scale**: All dimensions use a 0-1 continuous scale:
+/// * 0.0 = Absence/minimum of that emotional quality
+/// * 0.5 = Moderate level (where applicable)
+/// * 1.0 = Maximum intensity of that emotional quality
+///
+/// # Theoretical Framework
+///
+/// ## Core Dimensions:
+/// * **Valence**: The hedonic tone of emotion - intrinsic attractiveness (positive)
+///   or averseness (negative) of an experience. Based on the fundamental pleasure-
+///   displeasure dimension found across all emotion theories.
+///
+/// * **Arousal**: The activation level of the nervous system - energy, alertness, and
+///   physiological mobilization. Independent of whether the experience is pleasant or
+///   unpleasant.
+///
+/// ## Four Quadrants of Core Affect (Russell's Circumplex Model):
+/// * **High Arousal + Positive Valence**: Excited, happy, enthusiastic, elated
+/// * **High Arousal + Negative Valence**: Angry, fearful, stressed, anxious
+/// * **Low Arousal + Positive Valence**: Calm, serene, relaxed, content
+/// * **Low Arousal + Negative Valence**: Sad, bored, depressed, lethargic
+///
+/// ## Specific Affect States:
+/// Beyond core valence and arousal, the system tracks specific emotional qualities
+/// that have distinct behavioral implications:
+/// * **Anxiety**: Apprehensive expectation of threat (future-oriented fear)
+/// * **Hostility**: Antagonistic, aggressive orientation toward others
+/// * **Engagement**: Cognitive and motivational involvement with environment
+/// * **Confidence**: Self-efficacy and perceived control over situations
+///
+/// # Behavioral Mapping Examples
+///
+/// ## Approach Behaviors:
+/// * `positive_valence: 0.8, arousal: 0.7, engagement: 0.9, confidence: 0.8`
+///   → Enthusiastic exploration, proactive goal pursuit
+///
+/// * `positive_valence: 0.7, arousal: 0.3, engagement: 0.6, confidence: 0.6`
+///   → Calm, steady work; contentment without urgency
+///
+/// ## Avoidance Behaviors:
+/// * `negative_valence: 0.7, anxiety: 0.9, confidence: 0.2, arousal: 0.6`
+///   → Anxious avoidance, hesitation, flight responses
+///
+/// * `negative_valence: 0.8, arousal: 0.2, engagement: 0.1, confidence: 0.3`
+///   → Withdrawn, depressive avoidance, low motivation
+///
+/// ## Aggressive Behaviors:
+/// * `hostility: 0.9, arousal: 0.9, negative_valence: 0.7, confidence: 0.7`
+///   → Active aggression, confrontation, fight responses
+///
+/// * `hostility: 0.6, arousal: 0.4, negative_valence: 0.5, confidence: 0.3`
+///   → Passive-aggressive, irritable but not mobilized
+///
+/// ## Complex States:
+/// * `positive_valence: 0.6, negative_valence: 0.5, arousal: 0.7, anxiety: 0.6`
+///   → Mixed emotions: excited but nervous (e.g., before a performance)
+///
+/// * `engagement: 0.9, arousal: 0.8, positive_valence: 0.8, anxiety: 0.1`
+///   → Flow state: absorbed, energized, time distortion
+///
+/// # Implementation Guidelines
+///
+/// ## Temporal Dynamics:
+/// * **Fast changes**: arousal, anxiety (respond quickly to immediate threats/opportunities)
+/// * **Medium changes**: positive_valence, negative_valence, hostility (respond to ongoing situations)
+/// * **Slow changes**: confidence, engagement (accumulate over experiences)
+///
+/// ## Baseline vs. Reactive Values:
+/// Consider implementing separate baseline and current values, where current values
+/// decay back toward baseline over time in the absence of stimuli.
+///
+/// ## Interaction Effects:
+/// * High `anxiety` typically suppresses `confidence` and `positive_valence`
+/// * High `engagement` + high `confidence` amplifies approach behaviors
+/// * High `hostility` + low `arousal` may indicate suppressed anger
+/// * High `negative_valence` + low `arousal` suggests depression/withdrawal
+/// * High `positive_valence` + high `negative_valence` indicates emotional complexity
+///
+/// ## Validation Considerations:
+/// * Values should generally correlate with observable behaviors
+/// * Extreme values (>0.9 or <0.1) should be rare and temporary
+/// * Most "normal" states cluster around 0.3-0.7 range
+/// * Consider clamping or normalizing to prevent unrealistic combinations
+pub struct PersonalityMood {
+    /// Positive Valence (Happiness/Pleasure)
+    ///
+    /// Positive valence represents the intrinsic attractiveness and pleasantness of
+    /// the current emotional experience. This is the hedonic "good feeling" dimension.
+    ///
+    /// ## Theoretical Basis:
+    /// Derived from SPANE's positive affect items (positive, good, pleasant, happy,
+    /// joyful, contented) and PANAS positive affect scale.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0` = Neutral hedonic tone; absence of positive feelings
+    /// * `0.3-0.5` = Mild pleasant feelings; things are going okay
+    /// * `0.5-0.7` = Moderate happiness; satisfied, content
+    /// * `0.7-0.9` = Strong positive feelings; very happy, joyful
+    /// * `0.9-1.0` = Extreme positive affect; elated, euphoric, ecstatic
+    ///
+    /// ## Behavioral Implications:
+    /// * **High values** (>0.7): Increased approach motivation, social engagement,
+    ///   creative thinking, risk tolerance, generosity, optimistic judgments
+    /// * **Moderate values** (0.4-0.7): Balanced motivation, openness to opportunities
+    /// * **Low values** (<0.3): Reduced motivation (unless driven by other factors),
+    ///   neutral or negative expectations
+    ///
+    /// ## Example States:
+    /// * `1.0` - Intense joy at major achievement, peak experience
+    /// * `0.8` - Genuinely happy, things are going very well
+    /// * `0.5` - Mildly pleasant, comfortable baseline
+    /// * `0.2` - Little pleasure, neutral or slightly flat
+    /// * `0.0` - Complete absence of positive feelings (not necessarily unhappy)
+    ///
+    /// ## Implementation Notes:
+    /// * Can coexist with moderate `negative_valence` (bittersweet, nostalgia)
+    /// * Amplified by success, social connection, novel positive experiences
+    /// * Gradually decays toward baseline in absence of positive stimuli
+    /// * May temporarily spike during rewards/achievements then normalize
+    pub positive_valance: f32,
+
+    /// Negative Valence (Distress/Displeasure)
+    ///
+    /// Negative valence represents the intrinsic averseness and unpleasantness of
+    /// the current emotional experience. This is the hedonic "bad feeling" dimension.
+    ///
+    /// ## Theoretical Basis:
+    /// Derived from SPANE's negative affect items (negative, bad, unpleasant, sad,
+    /// afraid, angry) and PANAS negative affect scale.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0` = Neutral hedonic tone; absence of negative feelings
+    /// * `0.3-0.5` = Mild discomfort; something is bothering the entity
+    /// * `0.5-0.7` = Moderate distress; clearly unpleasant experience
+    /// * `0.7-0.9` = Strong negative feelings; significant suffering
+    /// * `0.9-1.0` = Extreme negative affect; anguish, despair, agony
+    ///
+    /// ## Behavioral Implications:
+    /// * **High values** (>0.7): Strong avoidance motivation, withdrawal, help-seeking,
+    ///   defensive behaviors, negative biases in perception and memory
+    /// * **Moderate values** (0.4-0.7): Caution, problem-solving focus, reduced social
+    ///   interest, attention to threats/problems
+    /// * **Low values** (<0.3): No significant distress, comfortable state
+    ///
+    /// ## Example States:
+    /// * `1.0` - Extreme suffering, unbearable emotional pain, crisis
+    /// * `0.8` - Significant distress, very upset, major problem
+    /// * `0.5` - Moderately bothered, something is wrong, uncomfortable
+    /// * `0.2` - Slightly unpleasant, minor annoyance
+    /// * `0.0` - No distress, emotionally neutral or positive
+    ///
+    /// ## Implementation Notes:
+    /// * Independent from `positive_valence` - both can be high (complexity, ambivalence)
+    /// * Both low indicates emotional numbness or baseline calm
+    /// * Elevated by failures, losses, conflicts, threats, pain
+    /// * Slower to decay than positive_valence (negativity bias)
+    /// * Chronic elevation (>0.6 sustained) may indicate depression/trauma
+    pub negative_valance: f32,
+
+    /// Arousal (Activation/Energy)
+    ///
+    /// Arousal represents the activation level of the organism - the intensity of
+    /// physiological and psychological mobilization, independent of hedonic tone.
+    ///
+    /// ## Theoretical Basis:
+    /// Derived from the arousal dimension in dimensional models of emotion (Russell's
+    /// circumplex) and PANAS items like "alert," "active," "attentive" vs. their opposites.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0-0.2` = Very low arousal; sleepy, sluggish, lethargic
+    /// * `0.2-0.4` = Low arousal; calm, relaxed, quiet
+    /// * `0.4-0.6` = Moderate arousal; normal waking alertness
+    /// * `0.6-0.8` = High arousal; energized, alert, activated
+    /// * `0.8-1.0` = Very high arousal; excited, hypervigilant, agitated
+    ///
+    /// ## Interaction with Valence:
+    /// * High arousal + positive valence = Excited, enthusiastic, energetic joy
+    /// * High arousal + negative valence = Anxious, angry, panicked, stressed
+    /// * Low arousal + positive valence = Calm, serene, peaceful, content
+    /// * Low arousal + negative valence = Sad, depressed, bored, withdrawn
+    ///
+    /// ## Behavioral Implications:
+    /// * **High arousal** (>0.7): Rapid reactions, heightened sensory processing,
+    ///   increased motor activity, difficulty with sustained attention, energized
+    ///   behaviors (whether approach or avoidance depends on valence)
+    /// * **Moderate arousal** (0.4-0.6): Optimal for complex cognitive tasks,
+    ///   balanced responsiveness, normal engagement
+    /// * **Low arousal** (<0.3): Reduced reactivity, slower responses, difficulty
+    ///   initiating action, may indicate fatigue or depression
+    ///
+    /// ## Example States:
+    /// * `1.0` - Extreme activation; panic, rage, intense excitement, peak performance
+    /// * `0.8` - Very energized; highly alert, ready for intense activity
+    /// * `0.5` - Normal waking state; comfortably alert
+    /// * `0.3` - Relaxed; low energy but conscious
+    /// * `0.1` - Nearly asleep; barely conscious, exhausted
+    ///
+    /// ## Implementation Notes:
+    /// * Changes quickly in response to immediate stimuli
+    /// * Follows circadian rhythms (naturally higher during day, lower at night)
+    /// * Inverted-U relationship with performance (moderate arousal = best performance)
+    /// * Can be temporarily elevated by threats, opportunities, stimulants
+    /// * Chronic high arousal (>0.7) may indicate stress or anxiety disorders
+    pub arousal: f32,
+
+    /// Anxiety/Nervousness
+    ///
+    /// Anxiety represents apprehensive expectation about potential future threats,
+    /// characterized by worry, tension, and physiological activation oriented toward
+    /// detecting and avoiding danger.
+    ///
+    /// ## Theoretical Basis:
+    /// Derived from PANAS items "nervous," "scared," "afraid," "jittery" and anxiety
+    /// subscales in clinical emotion measures. Distinct from fear (which is response
+    /// to present threat) by its future orientation and uncertainty.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0-0.2` = Completely calm; no worry or apprehension
+    /// * `0.2-0.4` = Mild concern; slight unease about future
+    /// * `0.4-0.6` = Moderate anxiety; noticeable worry, some tension
+    /// * `0.6-0.8` = High anxiety; significant worry, difficulty relaxing
+    /// * `0.8-1.0` = Extreme anxiety; panic, terror, overwhelming dread
+    ///
+    /// ## Relationship to Other Dimensions:
+    /// * Typically accompanied by elevated `arousal` (physiological activation)
+    /// * Usually increases `negative_valence` and decreases `positive_valence`
+    /// * Inversely related to `confidence` (anxiety reflects low perceived control)
+    /// * May increase or decrease `engagement` depending on anxiety type
+    ///
+    /// ## Behavioral Implications:
+    /// * **High anxiety** (>0.7): Avoidance behaviors, hypervigilance, difficulty
+    ///   making decisions, seeking reassurance, withdrawal from novel situations,
+    ///   catastrophic thinking, attention bias toward threats
+    /// * **Moderate anxiety** (0.4-0.6): Cautious approach, increased checking
+    ///   behaviors, can motivate preparation but may impair performance
+    /// * **Low anxiety** (<0.3): Relaxed, willing to take reasonable risks,
+    ///   open to novel experiences
+    ///
+    /// ## Example States:
+    /// * `1.0` - Panic attack; overwhelming terror, feeling of impending doom
+    /// * `0.8` - Severe anxiety; can't stop worrying, physical symptoms intense
+    /// * `0.6` - Notably anxious; worried about specific concerns, tense
+    /// * `0.4` - Mild nervousness; slightly on edge, manageable concern
+    /// * `0.2` - Minimal worry; mostly at ease
+    /// * `0.0` - Completely calm; no apprehension whatsoever
+    ///
+    /// ## Implementation Notes:
+    /// * Increases rapidly in response to uncertain/unpredictable situations
+    /// * Amplified by lack of control, ambiguous threats, social evaluation
+    /// * Decays slowly; tends to maintain elevation even after threat passes
+    /// * Chronic elevation (>0.5 sustained) indicates anxiety as a trait-like pattern
+    /// * May trigger specific phobic responses (>0.8) to particular stimuli
+    pub anxiety: f32,
+
+    /// Hostility/Aggression
+    ///
+    /// Hostility represents antagonistic orientation toward others, ranging from
+    /// irritation and resentment to rage and violent impulses. Combines angry affect
+    /// with aggressive motivational tendency.
+    ///
+    /// ## Theoretical Basis:
+    /// Derived from PANAS items "hostile," "irritable," and anger subscales in emotion
+    /// measures. Represents the anger-aggression dimension distinct from other negative
+    /// emotions like sadness or anxiety.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0-0.2` = Peaceful; no irritation or antagonism
+    /// * `0.2-0.4` = Slight irritation; minor annoyance, easily managed
+    /// * `0.4-0.6` = Moderate hostility; noticeably irritated, assertive
+    /// * `0.6-0.8` = High hostility; angry, aggressive impulses, confrontational
+    /// * `0.8-1.0` = Extreme hostility; rage, violent impulses, loss of control
+    ///
+    /// ## Relationship to Other Dimensions:
+    /// * Typically accompanied by elevated `arousal` (anger is activating emotion)
+    /// * Usually increases `negative_valence` but not always (some enjoy aggression)
+    /// * Often paired with moderate-to-high `confidence` (approach-oriented emotion)
+    /// * Inversely related to `anxiety` (anger = fight; anxiety = flight)
+    ///
+    /// ## Behavioral Implications:
+    /// * **High hostility** (>0.7): Aggressive approach, confrontation, verbal/physical
+    ///   attacks, dominance behaviors, reduced empathy, hostile attributions about
+    ///   others' intentions, impulsive reactive aggression
+    /// * **Moderate hostility** (0.4-0.6): Assertiveness, standing ground, irritable
+    ///   responses, competitive behavior, reduced cooperation
+    /// * **Low hostility** (<0.3): Peaceful, cooperative, tolerant, prosocial
+    ///
+    /// ## Example States:
+    /// * `1.0` - Murderous rage; violent impulses, total loss of control
+    /// * `0.8` - Furious; intense anger, strong desire to attack/harm
+    /// * `0.6` - Very angry; clearly hostile, confrontational, aggressive
+    /// * `0.4` - Irritated; annoyed, slightly confrontational
+    /// * `0.2` - Mildly annoyed; barely noticeable irritation
+    /// * `0.0` - Completely peaceful; no antagonism whatsoever
+    ///
+    /// ## Implementation Notes:
+    /// * Increases in response to frustration, perceived injustice, threats to status
+    /// * Can be triggered by blocked goals, disrespect, territorial intrusions
+    /// * Amplified by low `confidence` → `anxiety` → displaced aggression
+    /// * Decays relatively quickly unless sustained by ongoing provocations
+    /// * Chronic elevation (>0.4 sustained) may indicate hostile attribution bias
+    /// * Consider separate reactive (hot) vs. instrumental (cold) aggression
+    pub hostility: f32,
+
+    /// Interest/Engagement
+    ///
+    /// Engagement represents the degree of cognitive and motivational involvement with
+    /// the environment - curiosity, attentiveness, absorption, and desire to interact
+    /// with or explore situations.
+    ///
+    /// ## Theoretical Basis:
+    /// Derived from PANAS items "interested," "alert," "attentive," "inspired" and
+    /// related to intrinsic motivation and flow state concepts.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0-0.2` = Apathetic; no interest, completely disengaged, bored
+    /// * `0.2-0.4` = Mild interest; somewhat attentive, minimal engagement
+    /// * `0.4-0.6` = Moderate interest; reasonably engaged, normal attention
+    /// * `0.6-0.8` = High interest; captivated, absorbed, curious
+    /// * `0.8-1.0` = Extreme interest; completely absorbed, flow state, inspired
+    ///
+    /// ## Relationship to Other Dimensions:
+    /// * Often (but not always) accompanies `positive_valence`
+    /// * Typically requires moderate `arousal` (alert enough to attend)
+    /// * Enhanced by `confidence` (more likely to engage when capable)
+    /// * Suppressed by high `anxiety` (threat focus) or `negative_valence` (withdrawal)
+    ///
+    /// ## Behavioral Implications:
+    /// * **High engagement** (>0.7): Exploratory behavior, sustained attention,
+    ///   intrinsic motivation, creative problem-solving, seeking information,
+    ///   time distortion (flow), resistance to distraction
+    /// * **Moderate engagement** (0.4-0.6): Normal attention and participation,
+    ///   responsive to novelty, adequate task focus
+    /// * **Low engagement** (<0.3): Boredom, apathy, difficulty sustaining attention,
+    ///   seeking external stimulation, avoidance of demands, passivity
+    ///
+    /// ## Example States:
+    /// * `1.0` - Complete absorption; flow state, time disappears, peak engagement
+    /// * `0.8` - Fascinated; deeply curious, can't look away, inspired
+    /// * `0.6` - Interested; actively engaged, attentive, curious
+    /// * `0.4` - Mildly engaged; paying attention but not captivated
+    /// * `0.2` - Slightly bored; minimal interest, attention wandering
+    /// * `0.0` - Completely apathetic; total disengagement, profound boredom
+    ///
+    /// ## Implementation Notes:
+    /// * Increases in response to novelty, complexity, personal relevance
+    /// * Enhanced by optimal challenge level (not too easy, not too hard)
+    /// * Requires sufficient `arousal` (can't be engaged while exhausted)
+    /// * Amplified by progress toward goals and positive feedback
+    /// * Chronic low engagement (<0.3) may indicate depression or burnout
+    /// * Peak engagement (>0.8) + moderate challenge = flow state conditions
+    pub engagement: f32,
+
+    /// Confidence/Self-Efficacy
+    ///
+    /// Confidence represents perceived competence and control - the belief that one
+    /// can successfully handle situations and achieve desired outcomes. Combines
+    /// self-efficacy with feelings of strength and determination.
+    ///
+    /// ## Theoretical Basis:
+    /// Related to PANAS items "strong," "determined," "active" and self-efficacy
+    /// theory. Represents the empowerment-powerlessness dimension of emotional
+    /// experience.
+    ///
+    /// ## Scale Interpretation:
+    /// * `0.0-0.2` = Powerless; helpless, incompetent, no control
+    /// * `0.2-0.4` = Low confidence; insecure, doubting abilities
+    /// * `0.4-0.6` = Moderate confidence; capable but uncertain
+    /// * `0.6-0.8` = High confidence; self-assured, competent, in control
+    /// * `0.8-1.0` = Extreme confidence; invincible feeling, total self-assurance
+    ///
+    /// ## Relationship to Other Dimensions:
+    /// * Often accompanies `positive_valence` (success feels good)
+    /// * Inversely related to `anxiety` (confidence = control; anxiety = lack of control)
+    /// * Enables high `engagement` (more willing to engage when confident)
+    /// * Moderates relationship between `hostility` and action (confident hostility → aggression)
+    ///
+    /// ## Behavioral Implications:
+    /// * **High confidence** (>0.7): Approach behaviors, taking initiative, risk-taking,
+    ///   assertiveness, persistence in face of obstacles, acceptance of challenges,
+    ///   leadership behaviors, resilience to setbacks
+    /// * **Moderate confidence** (0.4-0.6): Balanced approach, reasonable risk
+    ///   assessment, can attempt challenges with some hesitation
+    /// * **Low confidence** (<0.3): Avoidance of challenges, help-seeking, passivity,
+    ///   giving up easily, hesitation, deferring to others
+    ///
+    /// ## Example States:
+    /// * `1.0` - Absolutely certain of success; invincible feeling, unstoppable
+    /// * `0.8` - Very confident; strong self-belief, ready for any challenge
+    /// * `0.6` - Confident; self-assured, capable, in control
+    /// * `0.4` - Somewhat unsure; can try but doubting abilities
+    /// * `0.2` - Insecure; feeling inadequate, low self-belief
+    /// * `0.0` - Completely powerless; utterly helpless, total self-doubt
+    ///
+    /// ## Implementation Notes:
+    /// * Increases with success experiences, positive feedback, mastery
+    /// * Decreases with failures, criticism, loss of control
+    /// * Domain-specific (can be confident in one area, not another)
+    /// * Changes more slowly than state emotions (semi-stable)
+    /// * Moderate confidence often optimal (overconfidence = recklessness)
+    /// * Chronic low confidence (<0.3) may indicate learned helplessness
+    /// * Extremely high confidence (>0.9) may indicate mania or delusion
+    pub confidence: f32,
 }
 
 /// Personality component for LLM context

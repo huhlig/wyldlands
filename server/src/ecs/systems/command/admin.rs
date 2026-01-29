@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ pub async fn world_save_command(
 
     // Count all persistent entities
     let mut persistent_count = 0;
-    for (_ent, _) in world.query::<&Persistent>().iter() {
+    for (_ent, _) in world.query::<(Entity, &Persistent)>().iter() {
         persistent_count += 1;
     }
 
@@ -83,7 +83,7 @@ pub async fn world_reload_command(
             Ok(account_id) => account_id,
             Err(_) => {
                 return CommandResult::Failure(
-                    "Error: Cannot reload world - you are not an avatar entity".to_string()
+                    "Error: Cannot reload world - you are not an avatar entity".to_string(),
                 );
             }
         }
@@ -92,7 +92,7 @@ pub async fn world_reload_command(
     // Count entities before reload
     let entities_before = {
         let world = context.entities().read().await;
-        world.query::<&EntityUuid>().iter().count()
+        world.query::<&EntityUuid>().into_iter().count()
     };
 
     // Perform the reload
@@ -100,27 +100,30 @@ pub async fn world_reload_command(
         // Get write access to world
         let mut world = context.entities().write().await;
 
-            // Despawn all entities except the admin
-            let mut entities_to_despawn = Vec::new();
-            for (ent, _) in world.query::<&EntityUuid>().iter() {
-                // Check if this is the admin
-                if let Ok(avatar) = world.get::<&Avatar>(ent) {
-                    if avatar.account_id == admin_account_id {
-                        continue; // Skip the admin
-                    }
+        // Despawn all entities except the admin
+        let mut entities_to_despawn = Vec::new();
+        for (ent, _) in world.query::<(Entity, &EntityUuid)>().iter() {
+            // Check if this is the admin
+            if let Ok(avatar) = world.get::<&Avatar>(ent) {
+                if avatar.account_id == admin_account_id {
+                    continue; // Skip the admin
                 }
-                entities_to_despawn.push(ent);
             }
+            entities_to_despawn.push(ent);
+        }
 
-            let despawned_count = entities_to_despawn.len();
-            for ent in entities_to_despawn {
-                let _ = world.despawn(ent);
-            }
+        let despawned_count = entities_to_despawn.len();
+        for ent in entities_to_despawn {
+            let _ = world.despawn(ent);
+        }
 
         drop(world); // Release write lock before loading
 
         // Load entities from database
-        context.load().await.map(|loaded_count| (despawned_count, loaded_count))
+        context
+            .load()
+            .await
+            .map(|loaded_count| (despawned_count, loaded_count))
     };
 
     match reload_result {
@@ -140,7 +143,7 @@ pub async fn world_reload_command(
                 loaded,
                 {
                     let world = context.entities().read().await;
-                    world.query::<&EntityUuid>().iter().count()
+                    world.query::<&EntityUuid>().into_iter().count()
                 },
                 "=".repeat(80)
             );
@@ -227,7 +230,7 @@ fn get_component_types(world: &GameWorld, entity: EcsEntity) -> Vec<String> {
     if world.get::<&Material>(entity).is_ok() {
         components.push("Material");
     }
-    if world.get::<&ArmorDefense>(entity).is_ok() {
+    if world.get::<&Armor>(entity).is_ok() {
         components.push("ArmorDefense");
     }
     if world.get::<&Commandable>(entity).is_ok() {
@@ -272,7 +275,7 @@ pub async fn list_entities_command(
     // Collect all entities with UUIDs
     let mut entities: Vec<(EcsEntity, uuid::Uuid, Option<String>)> = Vec::new();
 
-    for (ent, entity_uuid) in world.query::<&EntityUuid>().iter() {
+    for (ent, entity_uuid) in world.query::<(Entity, &EntityUuid)>().iter() {
         let name = world.get::<&Name>(ent).ok().map(|n| n.display.clone());
         entities.push((ent, entity_uuid.0, name));
     }
@@ -334,7 +337,7 @@ pub async fn query_entity_command(
 
     // Find the entity with the matching UUID
     let mut found_entity = None;
-    for (ent, entity_uuid) in world.query::<&EntityUuid>().iter() {
+    for (ent, entity_uuid) in world.query::<(Entity, &EntityUuid)>().iter() {
         if entity_uuid.0 == target_uuid {
             found_entity = Some(ent);
             break;
@@ -637,7 +640,7 @@ pub async fn query_entity_command(
     }
 
     // ArmorDefense
-    if let Ok(armor) = world.get::<&ArmorDefense>(target_entity) {
+    if let Ok(armor) = world.get::<&Armor>(target_entity) {
         output.push_str("\r\n  ArmorDefense:\r\n");
         if armor.defenses.is_empty() {
             output.push_str("    (no defenses)\r\n");
@@ -707,7 +710,6 @@ pub async fn query_entity_command(
     CommandResult::Success(output)
 }
 
-
 // ============================================================================
 // Builder Commands (Area, Room, Exit, Item Management)
 // ============================================================================
@@ -724,7 +726,11 @@ pub async fn area_create_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Area Create Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Area Create Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: area create <name>".to_string());
@@ -741,7 +747,9 @@ pub async fn area_create_command(
             Name::new(&area_name),
             Description::new(
                 format!("A new area called {}", area_name),
-                format!("This is a newly created area. Use 'area edit' to add a proper description."),
+                format!(
+                    "This is a newly created area. Use 'area edit' to add a proper description."
+                ),
             ),
             Area::new(AreaKind::Overworld),
             Persistent,
@@ -793,8 +801,10 @@ pub async fn area_list_command(
     // Collect all areas
     let mut areas: Vec<(uuid::Uuid, String, AreaKind, Vec<String>, usize)> = Vec::new();
 
-    for (area_entity, (area_uuid, area_comp)) in world.query::<(&EntityUuid, &Area)>().iter() {
-        let name = world.get::<&Name>(area_entity)
+    for (area_entity, area_uuid, area_comp) in world.query::<(Entity, &EntityUuid, &Area)>().iter()
+    {
+        let name = world
+            .get::<&Name>(area_entity)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "(unnamed)".to_string());
 
@@ -806,9 +816,10 @@ pub async fn area_list_command(
         }
 
         // Count rooms in this area
-        let room_count = world.query::<&Room>()
+        let room_count = world
+            .query::<&Room>()
             .iter()
-            .filter(|(_, room)| room.area_id.uuid() == area_uuid.0)
+            .filter(|room| room.area_id.uuid() == area_uuid.0)
             .count();
 
         areas.push((
@@ -835,8 +846,13 @@ pub async fn area_list_command(
         output.push_str(&format!("UUID: {}\r\n", uuid));
         output.push_str(&format!("  Name: {}\r\n", name));
         output.push_str(&format!("  Kind: {:?}\r\n", kind));
-        output.push_str(&format!("  Flags: {}\r\n", 
-            if flags.is_empty() { "(none)".to_string() } else { flags.join(", ") }
+        output.push_str(&format!(
+            "  Flags: {}\r\n",
+            if flags.is_empty() {
+                "(none)".to_string()
+            } else {
+                flags.join(", ")
+            }
         ));
         output.push_str(&format!("  Rooms: {}\r\n\r\n", room_count));
     }
@@ -866,7 +882,8 @@ pub async fn area_edit_command(
                area edit <uuid> description A new description\r\n\
                area edit <uuid> kind Dungeon\r\n\
                area edit <uuid> flag add Underwater\r\n\
-               area edit <uuid> flag remove Underwater".to_string()
+               area edit <uuid> flag remove Underwater"
+                .to_string(),
         );
     }
 
@@ -904,7 +921,10 @@ pub async fn area_edit_command(
                 let old_name = name.display.clone();
                 name.display = value.clone();
                 name.keywords = vec![value.to_lowercase()];
-                Ok(format!("Area name changed from '{}' to '{}'", old_name, value))
+                Ok(format!(
+                    "Area name changed from '{}' to '{}'",
+                    old_name, value
+                ))
             } else {
                 Err("Failed to update area name".to_string())
             }
@@ -926,7 +946,8 @@ pub async fn area_edit_command(
                 _ => {
                     drop(world);
                     return CommandResult::Failure(
-                        "Invalid area kind. Valid values: Overworld, Vehicle, Building, Dungeon".to_string()
+                        "Invalid area kind. Valid values: Overworld, Vehicle, Building, Dungeon"
+                            .to_string(),
                     );
                 }
             };
@@ -942,7 +963,7 @@ pub async fn area_edit_command(
             if args.len() < 4 {
                 drop(world);
                 return CommandResult::Failure(
-                    "Usage: area edit <uuid> flag <add|remove> <flag>".to_string()
+                    "Usage: area edit <uuid> flag <add|remove> <flag>".to_string(),
                 );
             }
 
@@ -967,23 +988,23 @@ pub async fn area_edit_command(
                             Err(format!("Area does not have flag: {}", flag))
                         }
                     }
-                    _ => Err("Invalid action. Use 'add' or 'remove'".to_string())
+                    _ => Err("Invalid action. Use 'add' or 'remove'".to_string()),
                 }
             } else {
                 Err("Failed to update area flags".to_string())
             }
         }
-        _ => Err(format!("Unknown property: {}", property))
+        _ => Err(format!("Unknown property: {}", property)),
     };
 
     drop(world);
-    
+
     match result {
         Ok(msg) => {
             context.mark_entity_dirty(area_entity).await;
             CommandResult::Success(msg)
         }
-        Err(msg) => CommandResult::Failure(msg)
+        Err(msg) => CommandResult::Failure(msg),
     }
 }
 
@@ -995,7 +1016,11 @@ pub async fn area_delete_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Area Delete Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Area Delete Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: area delete <uuid>".to_string());
@@ -1025,14 +1050,16 @@ pub async fn area_delete_command(
     }
 
     // Get area name for output
-    let area_name = world.get::<&Name>(area_entity)
+    let area_name = world
+        .get::<&Name>(area_entity)
         .map(|n| n.display.clone())
         .unwrap_or_else(|_| "(unnamed)".to_string());
 
     // Count rooms in this area
-    let room_count = world.query::<&Room>()
+    let room_count = world
+        .query::<&Room>()
         .iter()
-        .filter(|(_, room)| room.area_id.uuid() == target_uuid)
+        .filter(|room| room.area_id.uuid() == target_uuid)
         .count();
 
     if room_count > 0 {
@@ -1111,28 +1138,34 @@ pub async fn area_info_command(
                     (kind, flags)
                 }
                 Err(_) => {
-                    return CommandResult::Failure(format!("Entity {} is not an area", target_uuid));
+                    return CommandResult::Failure(format!(
+                        "Entity {} is not an area",
+                        target_uuid
+                    ));
                 }
             }
         };
 
-        let name = world.get::<&Name>(area_entity)
+        let name = world
+            .get::<&Name>(area_entity)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "(unnamed)".to_string());
 
-        let description = world.get::<&Description>(area_entity)
+        let description = world
+            .get::<&Description>(area_entity)
             .map(|d| d.long.clone())
             .unwrap_or_else(|_| "(no description)".to_string());
 
         // Count rooms
-        let room_count = world.query::<&Room>()
+        let room_count = world
+            .query::<&Room>()
             .iter()
-            .filter(|(_, room)| room.area_id.uuid() == target_uuid)
+            .filter(|room| room.area_id.uuid() == target_uuid)
             .count();
 
         // Count exits
         let mut exit_count = 0;
-        for (room_entity, room) in world.query::<&Room>().iter() {
+        for (room_entity, room) in world.query::<(Entity, &Room)>().iter() {
             if room.area_id.uuid() == target_uuid {
                 if let Ok(exits) = world.get::<&Exits>(room_entity) {
                     exit_count += exits.exits.len();
@@ -1141,7 +1174,14 @@ pub async fn area_info_command(
         }
 
         drop(world);
-        (area_kind, area_flags, name, description, room_count, exit_count)
+        (
+            area_kind,
+            area_flags,
+            name,
+            description,
+            room_count,
+            exit_count,
+        )
     };
 
     let output = format!(
@@ -1160,7 +1200,11 @@ pub async fn area_info_command(
         name,
         description,
         area_kind,
-        if area_flags.is_empty() { "(none)".to_string() } else { area_flags.join(", ") },
+        if area_flags.is_empty() {
+            "(none)".to_string()
+        } else {
+            area_flags.join(", ")
+        },
         room_count,
         exit_count,
         "=".repeat(80)
@@ -1180,7 +1224,11 @@ pub async fn room_create_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Room Create Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Room Create Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.len() < 2 {
         return CommandResult::Failure("Usage: room create <area-uuid> <name>".to_string());
@@ -1211,7 +1259,8 @@ pub async fn room_create_command(
         return CommandResult::Failure(format!("Entity {} is not an area", area_uuid));
     }
 
-    let area_name = world.get::<&Name>(area_entity)
+    let area_name = world
+        .get::<&Name>(area_entity)
         .map(|n| n.display.clone())
         .unwrap_or_else(|_| "(unnamed)".to_string());
 
@@ -1226,7 +1275,9 @@ pub async fn room_create_command(
             Name::new(&room_name),
             Description::new(
                 format!("A room called {}", room_name),
-                format!("This is a newly created room. Use 'room edit' to add a proper description."),
+                format!(
+                    "This is a newly created room. Use 'room edit' to add a proper description."
+                ),
             ),
             Room::new(EntityId::from_uuid(area_uuid)),
             Exits::new(),
@@ -1244,7 +1295,10 @@ pub async fn room_create_command(
     {
         let world = context.entities().write().await;
         if let Ok(mut location) = world.get::<&mut Location>(entity) {
-            *location = Location::new(EntityId::from_uuid(area_uuid), EntityId::from_uuid(room_uuid));
+            *location = Location::new(
+                EntityId::from_uuid(area_uuid),
+                EntityId::from_uuid(room_uuid),
+            );
         }
     }
 
@@ -1294,7 +1348,8 @@ pub async fn room_list_command(
     // Get area name if filtering
     let area_name = if let Some(area_uuid) = area_filter {
         if let Some(area_entity) = find_entity_by_uuid(&world, area_uuid) {
-            world.get::<&Name>(area_entity)
+            world
+                .get::<&Name>(area_entity)
                 .map(|n| n.display.clone())
                 .unwrap_or_else(|_| "(unnamed)".to_string())
         } else {
@@ -1308,7 +1363,7 @@ pub async fn room_list_command(
     // Collect rooms
     let mut rooms: Vec<(uuid::Uuid, String, Vec<String>, Vec<RoomFlag>)> = Vec::new();
 
-    for (room_entity, (room_uuid, room)) in world.query::<(&EntityUuid, &Room)>().iter() {
+    for (room_entity, room_uuid, room) in world.query::<(Entity, &EntityUuid, &Room)>().iter() {
         // Apply area filter
         if let Some(filter_uuid) = area_filter {
             if room.area_id.uuid() != filter_uuid {
@@ -1316,11 +1371,13 @@ pub async fn room_list_command(
             }
         }
 
-        let name = world.get::<&Name>(room_entity)
+        let name = world
+            .get::<&Name>(room_entity)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "(unnamed)".to_string());
 
-        let exits = world.get::<&Exits>(room_entity)
+        let exits = world
+            .get::<&Exits>(room_entity)
             .map(|e| e.directions().iter().map(|s| s.to_string()).collect())
             .unwrap_or_else(|_| Vec::new());
 
@@ -1343,8 +1400,13 @@ pub async fn room_list_command(
     for (uuid, name, exits, flags) in rooms {
         output.push_str(&format!("UUID: {}\r\n", uuid));
         output.push_str(&format!("  Name: {}\r\n", name));
-        output.push_str(&format!("  Exits: {}\r\n",
-            if exits.is_empty() { "(none)".to_string() } else { exits.join(", ") }
+        output.push_str(&format!(
+            "  Exits: {}\r\n",
+            if exits.is_empty() {
+                "(none)".to_string()
+            } else {
+                exits.join(", ")
+            }
         ));
         output.push_str(&format!("  Flags: {:?}\r\n\r\n", flags));
     }
@@ -1435,7 +1497,9 @@ pub async fn exit_add_command(
     // Parse destination UUID
     let dest_uuid = match uuid::Uuid::parse_str(dest_uuid_str) {
         Ok(uuid) => uuid,
-        Err(_) => return CommandResult::Failure(format!("Invalid destination UUID: {}", dest_uuid_str)),
+        Err(_) => {
+            return CommandResult::Failure(format!("Invalid destination UUID: {}", dest_uuid_str));
+        }
     };
 
     // Get current location and room info
@@ -1464,18 +1528,25 @@ pub async fn exit_add_command(
         }
 
         let dest_room_name = if let Some(dest_entity) = find_entity_by_uuid(&world, dest_uuid) {
-            world.get::<&Name>(dest_entity)
+            world
+                .get::<&Name>(dest_entity)
                 .map(|n| n.display.clone())
                 .unwrap_or_else(|_| "(unnamed)".to_string())
         } else {
             "(unknown)".to_string()
         };
 
-        let current_room_name = world.get::<&Name>(current_room_entity)
+        let current_room_name = world
+            .get::<&Name>(current_room_entity)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "(unnamed)".to_string());
 
-        (current_loc, current_room_entity, dest_room_name, current_room_name)
+        (
+            current_loc,
+            current_room_entity,
+            dest_room_name,
+            current_room_name,
+        )
     };
 
     // Add the exit
@@ -1486,14 +1557,16 @@ pub async fn exit_add_command(
             if exits.has_exit(&direction) {
                 Err(format!("Exit '{}' already exists", direction))
             } else {
-                exits.exits.push(ExitData::new(&direction, EntityId::from_uuid(dest_uuid)));
+                exits
+                    .exits
+                    .push(ExitData::new(&direction, EntityId::from_uuid(dest_uuid)));
                 Ok(())
             }
         } else {
             Err("Failed to add exit".to_string())
         };
         drop(world);
-        
+
         if let Err(e) = result {
             return CommandResult::Failure(e);
         }
@@ -1518,7 +1591,11 @@ pub async fn exit_remove_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Exit Remove Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Exit Remove Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: exit remove <direction>".to_string());
@@ -1551,7 +1628,11 @@ pub async fn exit_remove_command(
     let removed_dest = {
         let world = context.entities().write().await;
         let result = if let Ok(mut exits) = world.get::<&mut Exits>(current_room_entity) {
-            if let Some(pos) = exits.exits.iter().position(|e| e.direction.to_lowercase() == direction.to_lowercase()) {
+            if let Some(pos) = exits
+                .exits
+                .iter()
+                .position(|e| e.direction.to_lowercase() == direction.to_lowercase())
+            {
                 let removed = exits.exits.remove(pos);
                 Some(removed.dest_id.uuid())
             } else {
@@ -1561,7 +1642,7 @@ pub async fn exit_remove_command(
             None
         };
         drop(world);
-        
+
         if result.is_some() {
             context.mark_entity_dirty(current_room_entity).await;
         }
@@ -1592,7 +1673,7 @@ pub async fn exit_list_command(
     // Get current location
     let (_current_room_uuid, current_room_entity) = {
         let world = context.entities().read().await;
-        
+
         // Get location - extract value immediately
         let current_room_uuid = {
             let loc_ref = world.get::<&Location>(entity);
@@ -1611,38 +1692,38 @@ pub async fn exit_list_command(
                 return CommandResult::Failure("Current room not found".to_string());
             }
         };
-        
+
         (current_room_uuid, current_room_entity)
     };
 
     let (room_name, exits) = {
         let world = context.entities().read().await;
-        let room_name = world.get::<&Name>(current_room_entity)
+        let room_name = world
+            .get::<&Name>(current_room_entity)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "(unnamed)".to_string());
 
-        let exits =
-            match world.get::<&Exits>(current_room_entity) {
-                Ok(e) => e.exits.clone(),
-                Err(_) => {
-                    return CommandResult::Failure("Current room has no exits component".to_string());
-                }
-            };
-        
+        let exits = match world.get::<&Exits>(current_room_entity) {
+            Ok(e) => e.exits.clone(),
+            Err(_) => {
+                return CommandResult::Failure("Current room has no exits component".to_string());
+            }
+        };
+
         (room_name, exits)
     };
 
-    let mut output = format!(
-        "\r\nExits from: {}\r\n{}\r\n",
-        room_name,
-        "=".repeat(80)
-    );
+    let mut output = format!("\r\nExits from: {}\r\n{}\r\n", room_name, "=".repeat(80));
 
     if exits.is_empty() {
         output.push_str("(no exits)\r\n");
     } else {
         for exit in exits {
-            output.push_str(&format!("{} -> {}\r\n", exit.direction, exit.dest_id.uuid()));
+            output.push_str(&format!(
+                "{} -> {}\r\n",
+                exit.direction,
+                exit.dest_id.uuid()
+            ));
             if exit.closeable {
                 output.push_str(&format!(
                     "  Door: {} (Rating: {})\r\n",
@@ -1684,7 +1765,7 @@ pub async fn dig_command(
 
     if args.len() < 2 {
         return CommandResult::Failure(
-            "Usage: dig <direction> <room-name> [oneway] [area <area-uuid>]".to_string()
+            "Usage: dig <direction> <room-name> [oneway] [area <area-uuid>]".to_string(),
         );
     }
 
@@ -1708,7 +1789,10 @@ pub async fn dig_command(
                             i += 2;
                         }
                         Err(_) => {
-                            return CommandResult::Failure(format!("Invalid area UUID: {}", args[i + 1]));
+                            return CommandResult::Failure(format!(
+                                "Invalid area UUID: {}",
+                                args[i + 1]
+                            ));
                         }
                     }
                 } else {
@@ -1729,7 +1813,14 @@ pub async fn dig_command(
     let room_name = room_name_parts.join(" ");
 
     // Get current location and validate
-    let (current_room_uuid, current_area_uuid, current_room_entity, current_room_name, new_area_uuid, area_name) = {
+    let (
+        current_room_uuid,
+        current_area_uuid,
+        current_room_entity,
+        current_room_name,
+        new_area_uuid,
+        area_name,
+    ) = {
         let world = context.entities().read().await;
         let current_loc = match world.get::<&Location>(entity) {
             Ok(loc) => *loc,
@@ -1749,14 +1840,18 @@ pub async fn dig_command(
             }
         };
 
-        let current_room_name = world.get::<&Name>(current_room_entity)
+        let current_room_name = world
+            .get::<&Name>(current_room_entity)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "(unnamed)".to_string());
 
         // Check if exit already exists
         if let Ok(exits) = world.get::<&Exits>(current_room_entity) {
             if exits.has_exit(&direction) {
-                return CommandResult::Failure(format!("Exit '{}' already exists in current room", direction));
+                return CommandResult::Failure(format!(
+                    "Exit '{}' already exists in current room",
+                    direction
+                ));
             }
         }
 
@@ -1769,14 +1864,22 @@ pub async fn dig_command(
         }
 
         let area_name = if let Some(area_entity) = find_entity_by_uuid(&world, new_area_uuid) {
-            world.get::<&Name>(area_entity)
+            world
+                .get::<&Name>(area_entity)
                 .map(|n| n.display.clone())
                 .unwrap_or_else(|_| "(unnamed)".to_string())
         } else {
             "(unknown)".to_string()
         };
 
-        (current_room_uuid, current_area_uuid, current_room_entity, current_room_name, new_area_uuid, area_name)
+        (
+            current_room_uuid,
+            current_area_uuid,
+            current_room_entity,
+            current_room_name,
+            new_area_uuid,
+            area_name,
+        )
     };
 
     // Create the new room
@@ -1788,7 +1891,9 @@ pub async fn dig_command(
             Name::new(&room_name),
             Description::new(
                 format!("A room called {}", room_name),
-                format!("This is a newly created room. Use 'room edit' to add a proper description."),
+                format!(
+                    "This is a newly created room. Use 'room edit' to add a proper description."
+                ),
             ),
             Room::new(EntityId::from_uuid(new_area_uuid)),
             Exits::new(),
@@ -1797,7 +1902,9 @@ pub async fn dig_command(
     };
 
     // Register the entity
-    context.register_entity(new_room_entity, new_room_uuid).await;
+    context
+        .register_entity(new_room_entity, new_room_uuid)
+        .await;
 
     // Mark as dirty for persistence
     context.mark_entity_dirty(new_room_entity).await;
@@ -1806,7 +1913,10 @@ pub async fn dig_command(
     {
         let world = context.entities().write().await;
         if let Ok(mut exits) = world.get::<&mut Exits>(current_room_entity) {
-            exits.exits.push(ExitData::new(&direction, EntityId::from_uuid(new_room_uuid)));
+            exits.exits.push(ExitData::new(
+                &direction,
+                EntityId::from_uuid(new_room_uuid),
+            ));
         }
     }
     context.mark_entity_dirty(current_room_entity).await;
@@ -1817,7 +1927,10 @@ pub async fn dig_command(
         let rev_dir = reverse_direction.as_ref().unwrap().clone();
         let world = context.entities().write().await;
         if let Ok(mut exits) = world.get::<&mut Exits>(new_room_entity) {
-            exits.exits.push(ExitData::new(&rev_dir, EntityId::from_uuid(current_room_uuid)));
+            exits.exits.push(ExitData::new(
+                &rev_dir,
+                EntityId::from_uuid(current_room_uuid),
+            ));
         }
         drop(world);
         context.mark_entity_dirty(new_room_entity).await;
@@ -1830,7 +1943,10 @@ pub async fn dig_command(
     {
         let world = context.entities().write().await;
         if let Ok(mut location) = world.get::<&mut Location>(entity) {
-            *location = Location::new(EntityId::from_uuid(new_area_uuid), EntityId::from_uuid(new_room_uuid));
+            *location = Location::new(
+                EntityId::from_uuid(new_area_uuid),
+                EntityId::from_uuid(new_room_uuid),
+            );
         }
     }
 
@@ -1856,9 +1972,7 @@ pub async fn dig_command(
     if let Some(rev_dir) = reverse_dir_str {
         output.push_str(&format!(
             "  From {} -> {} -> {}\r\n",
-            room_name,
-            rev_dir,
-            current_room_name
+            room_name, rev_dir, current_room_name
         ));
     } else if oneway {
         output.push_str("  (No reverse exit created)\r\n");
@@ -1907,7 +2021,8 @@ pub async fn room_edit_command(
         return CommandResult::Failure(
             "Usage: room edit <uuid> <field> <value>\n\
              Fields: name, description, area\n\
-             Example: room edit <uuid> name New Room Name".to_string()
+             Example: room edit <uuid> name New Room Name"
+                .to_string(),
         );
     }
 
@@ -1938,7 +2053,7 @@ pub async fn room_edit_command(
     // Apply the edit
     match field.as_str() {
         "name" => {
-            let mut world = context.entities().write().await;
+            let world = context.entities().read().await;
             let result = if let Ok(mut name) = world.get::<&mut Name>(room_entity) {
                 name.display = value.clone();
                 CommandResult::Success(format!("Room name updated to: {}", value))
@@ -1950,7 +2065,7 @@ pub async fn room_edit_command(
             result
         }
         "description" => {
-            let mut world = context.entities().write().await;
+            let world = context.entities().read().await;
             let result = if let Ok(mut desc) = world.get::<&mut Description>(room_entity) {
                 desc.long = value.clone();
                 CommandResult::Success(format!("Room description updated"))
@@ -1994,7 +2109,10 @@ pub async fn room_edit_command(
             context.mark_entity_dirty(room_entity).await;
             result
         }
-        _ => CommandResult::Failure(format!("Unknown field: {}. Valid fields: name, description, area", field)),
+        _ => CommandResult::Failure(format!(
+            "Unknown field: {}. Valid fields: name, description, area",
+            field
+        )),
     }
 }
 
@@ -2006,7 +2124,11 @@ pub async fn room_delete_bulk_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Room Delete Bulk Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Room Delete Bulk Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: room deleteall <area_uuid>".to_string());
@@ -2020,16 +2142,17 @@ pub async fn room_delete_bulk_command(
     // Find and collect all rooms in the area
     let room_entities: Vec<(EcsEntity, uuid::Uuid)> = {
         let world = context.entities().read().await;
-        
+
         // Verify area exists
         if find_entity_by_uuid(&world, area_uuid).is_none() {
             return CommandResult::Failure(format!("Area {} not found", area_uuid));
         }
 
-        world.query::<(&EntityUuid, &Room)>()
+        world
+            .query::<(Entity, &EntityUuid, &Room)>()
             .iter()
-            .filter(|(_, (_, room))| room.area_id.uuid() == area_uuid)
-            .map(|(entity, (entity_uuid, _))| (entity, entity_uuid.0))
+            .filter(|(_, _, room)| room.area_id.uuid() == area_uuid)
+            .map(|(entity, entity_uuid, _)| (entity, entity_uuid.0))
             .collect()
     };
 
@@ -2099,12 +2222,19 @@ pub async fn exit_edit_command(
         let mut world = context.entities().write().await;
         let result = if let Ok(mut exits) = world.get::<&mut Exits>(current_room_entity) {
             // Find the exit
-            if let Some(exit) = exits.exits.iter_mut().find(|e| e.direction.to_lowercase() == direction) {
+            if let Some(exit) = exits
+                .exits
+                .iter_mut()
+                .find(|e| e.direction.to_lowercase() == direction)
+            {
                 let result = match property.as_str() {
                     "closeable" => {
                         let closeable = value.to_lowercase() == "true";
                         exit.closeable = closeable;
-                        CommandResult::Success(format!("Exit '{}' closeable set to {}", direction, closeable))
+                        CommandResult::Success(format!(
+                            "Exit '{}' closeable set to {}",
+                            direction, closeable
+                        ))
                     }
                     "closed" => {
                         if !exit.closeable {
@@ -2112,7 +2242,10 @@ pub async fn exit_edit_command(
                         } else {
                             let closed = value.to_lowercase() == "true";
                             exit.closed = closed;
-                            CommandResult::Success(format!("Exit '{}' closed set to {}", direction, closed))
+                            CommandResult::Success(format!(
+                                "Exit '{}' closed set to {}",
+                                direction, closed
+                            ))
                         }
                     }
                     "lockable" => {
@@ -2121,7 +2254,10 @@ pub async fn exit_edit_command(
                         } else {
                             let lockable = value.to_lowercase() == "true";
                             exit.lockable = lockable;
-                            CommandResult::Success(format!("Exit '{}' lockable set to {}", direction, lockable))
+                            CommandResult::Success(format!(
+                                "Exit '{}' lockable set to {}",
+                                direction, lockable
+                            ))
                         }
                     }
                     "locked" => {
@@ -2130,7 +2266,10 @@ pub async fn exit_edit_command(
                         } else {
                             let locked = value.to_lowercase() == "true";
                             exit.locked = locked;
-                            CommandResult::Success(format!("Exit '{}' locked set to {}", direction, locked))
+                            CommandResult::Success(format!(
+                                "Exit '{}' locked set to {}",
+                                direction, locked
+                            ))
                         }
                     }
                     "door_rating" => {
@@ -2140,9 +2279,14 @@ pub async fn exit_edit_command(
                             match value.parse::<i32>() {
                                 Ok(rating) => {
                                     exit.door_rating = Some(rating);
-                                    CommandResult::Success(format!("Exit '{}' door rating set to {}", direction, rating))
+                                    CommandResult::Success(format!(
+                                        "Exit '{}' door rating set to {}",
+                                        direction, rating
+                                    ))
                                 }
-                                Err(_) => CommandResult::Failure("Invalid rating value".to_string()),
+                                Err(_) => {
+                                    CommandResult::Failure("Invalid rating value".to_string())
+                                }
                             }
                         }
                     }
@@ -2153,9 +2297,14 @@ pub async fn exit_edit_command(
                             match value.parse::<i32>() {
                                 Ok(rating) => {
                                     exit.lock_rating = Some(rating);
-                                    CommandResult::Success(format!("Exit '{}' lock rating set to {}", direction, rating))
+                                    CommandResult::Success(format!(
+                                        "Exit '{}' lock rating set to {}",
+                                        direction, rating
+                                    ))
                                 }
-                                Err(_) => CommandResult::Failure("Invalid rating value".to_string()),
+                                Err(_) => {
+                                    CommandResult::Failure("Invalid rating value".to_string())
+                                }
                             }
                         }
                     }
@@ -2191,7 +2340,11 @@ pub async fn area_search_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Area Search Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Area Search Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: area search <query>".to_string());
@@ -2202,14 +2355,20 @@ pub async fn area_search_command(
     let world = context.entities().read().await;
     let mut results = Vec::new();
 
-    for (entity, (entity_uuid, area, name)) in world.query::<(&EntityUuid, &Area, &Name)>().iter() {
+    for (entity_uuid, area, name) in world.query::<(&EntityUuid, &Area, &Name)>().iter() {
         if name.display.to_lowercase().contains(&query) {
-            let room_count = world.query::<&Room>()
+            let room_count = world
+                .query::<&Room>()
                 .iter()
-                .filter(|(_, room)| room.area_id.uuid() == entity_uuid.0)
+                .filter(|room| room.area_id.uuid() == entity_uuid.0)
                 .count();
-            
-            results.push((entity_uuid.0, name.display.clone(), area.area_kind, room_count));
+
+            results.push((
+                entity_uuid.0,
+                name.display.clone(),
+                area.area_kind,
+                room_count,
+            ));
         }
     }
 
@@ -2219,7 +2378,11 @@ pub async fn area_search_command(
         return CommandResult::Success(format!("No areas found matching '{}'", query));
     }
 
-    let mut output = format!("\r\nArea Search Results for '{}'\r\n{}\r\n", query, "=".repeat(80));
+    let mut output = format!(
+        "\r\nArea Search Results for '{}'\r\n{}\r\n",
+        query,
+        "=".repeat(80)
+    );
     for (uuid, name, kind, room_count) in results {
         output.push_str(&format!(
             "{} - {} ({:?}, {} rooms)\r\n",
@@ -2238,7 +2401,11 @@ pub async fn room_search_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Room Search Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Room Search Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: room search <query> [area_uuid]".to_string());
@@ -2257,7 +2424,7 @@ pub async fn room_search_command(
     let world = context.entities().read().await;
     let mut results = Vec::new();
 
-    for (entity, (entity_uuid, room, name)) in world.query::<(&EntityUuid, &Room, &Name)>().iter() {
+    for (entity_uuid, room, name) in world.query::<(&EntityUuid, &Room, &Name)>().iter() {
         // Apply area filter if specified
         if let Some(area_uuid) = area_filter {
             if room.area_id.uuid() != area_uuid {
@@ -2267,15 +2434,22 @@ pub async fn room_search_command(
 
         if name.display.to_lowercase().contains(&query) {
             // Get area name
-            let area_name = if let Some(area_entity) = find_entity_by_uuid(&world, room.area_id.uuid()) {
-                world.get::<&Name>(area_entity)
-                    .map(|n| n.display.clone())
-                    .unwrap_or_else(|_| "(unnamed area)".to_string())
-            } else {
-                "(unknown area)".to_string()
-            };
+            let area_name =
+                if let Some(area_entity) = find_entity_by_uuid(&world, room.area_id.uuid()) {
+                    world
+                        .get::<&Name>(area_entity)
+                        .map(|n| n.display.clone())
+                        .unwrap_or_else(|_| "(unnamed area)".to_string())
+                } else {
+                    "(unknown area)".to_string()
+                };
 
-            results.push((entity_uuid.0, name.display.clone(), room.area_id.uuid(), area_name));
+            results.push((
+                entity_uuid.0,
+                name.display.clone(),
+                room.area_id.uuid(),
+                area_name,
+            ));
         }
     }
 
@@ -2285,7 +2459,11 @@ pub async fn room_search_command(
         return CommandResult::Success(format!("No rooms found matching '{}'", query));
     }
 
-    let mut output = format!("\r\nRoom Search Results for '{}'\r\n{}\r\n", query, "=".repeat(80));
+    let mut output = format!(
+        "\r\nRoom Search Results for '{}'\r\n{}\r\n",
+        query,
+        "=".repeat(80)
+    );
     for (uuid, name, area_uuid, area_name) in results {
         output.push_str(&format!(
             "{} - {} (in {} - {})\r\n",
@@ -2308,7 +2486,11 @@ pub async fn item_create_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Item Create Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Item Create Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: item create <name>".to_string());
@@ -2336,9 +2518,13 @@ pub async fn item_create_command(
             Name::new(&item_name),
             Description::new(
                 format!("An item called {}", item_name),
-                "This is a newly created item. Use 'item edit' to add a proper description.".to_string(),
+                "This is a newly created item. Use 'item edit' to add a proper description."
+                    .to_string(),
             ),
-            Location::new(EntityId::from_uuid(area_uuid), EntityId::from_uuid(room_uuid)),
+            Location::new(
+                EntityId::from_uuid(area_uuid),
+                EntityId::from_uuid(room_uuid),
+            ),
             Containable::new(1.0), // Default weight
             Persistent,
         ))
@@ -2373,7 +2559,8 @@ pub async fn item_edit_command(
             "Usage: item edit <uuid> <field> <value>\n\
              Fields: name, description, weight, weapon, armor\n\
              Example: item edit <uuid> name Rusty Sword\n\
-             Example: item edit <uuid> weapon 5 10 slashing".to_string()
+             Example: item edit <uuid> weapon 5 10 slashing"
+                .to_string(),
         );
     }
 
@@ -2423,7 +2610,9 @@ pub async fn item_edit_command(
                         desc.long = value.clone();
                         CommandResult::Success("Item description updated".to_string())
                     }
-                    Err(_) => CommandResult::Failure("Failed to update item description".to_string()),
+                    Err(_) => {
+                        CommandResult::Failure("Failed to update item description".to_string())
+                    }
                 };
                 drop(world);
                 result
@@ -2457,7 +2646,9 @@ pub async fn item_edit_command(
         }
         "weapon" => {
             if value_args.len() < 3 {
-                return CommandResult::Failure("Usage: item edit <uuid> weapon <min_dmg> <max_dmg> <damage_type>".to_string());
+                return CommandResult::Failure(
+                    "Usage: item edit <uuid> weapon <min_dmg> <max_dmg> <damage_type>".to_string(),
+                );
             }
             let min_dmg = match value_args[0].parse::<i32>() {
                 Ok(v) => v,
@@ -2491,13 +2682,22 @@ pub async fn item_edit_command(
             }
             drop(world);
             context.mark_entity_dirty(item_entity).await;
-            CommandResult::Success(format!("Item weapon stats set: {}-{} {:?} damage", min_dmg, max_dmg, damage_type))
+            CommandResult::Success(format!(
+                "Item weapon stats set: {}-{} {:?} damage",
+                min_dmg, max_dmg, damage_type
+            ))
         }
         "armor" => {
             if value_args.is_empty() {
-                return CommandResult::Failure("Usage: item edit <uuid> armor <defense>".to_string());
+                return CommandResult::Failure(
+                    "Usage: item edit <uuid> armor <damage_type> <defense>".to_string(),
+                );
             }
-            let defense = match value_args[0].parse::<i32>() {
+            let damage_type = match DamageType::from_str(value_args[0].as_str()) {
+                Some(v) => v,
+                None => return CommandResult::Failure("Invalid damage type".to_string()),
+            };
+            let defense = match value_args[1].parse::<i32>() {
                 Ok(v) => v,
                 Err(_) => return CommandResult::Failure("Invalid defense value".to_string()),
             };
@@ -2506,19 +2706,29 @@ pub async fn item_edit_command(
             // Add or update armor component
             if world.get::<&Armor>(item_entity).is_ok() {
                 if let Ok(mut armor) = world.get::<&mut Armor>(item_entity) {
-                    armor.defense = defense;
+                    armor.defenses.entry(damage_type).insert_entry(defense);
                 }
             } else {
-                let _ = world.insert_one(item_entity, Armor {
-                    defense,
-                    armor_type: crate::ecs::components::MaterialKind::Leather,
-                });
+                let _ = world.insert_one(
+                    item_entity,
+                    Armor {
+                        defenses: HashMap::from_iter([(damage_type, defense)]),
+                        armor_type: MaterialKind::Leather,
+                    },
+                );
             }
             drop(world);
             context.mark_entity_dirty(item_entity).await;
-            CommandResult::Success(format!("Item armor defense set to {}", defense))
+            CommandResult::Success(format!(
+                "Item armor defense against {} set to {}",
+                damage_type.as_str(),
+                defense
+            ))
         }
-        _ => CommandResult::Failure(format!("Unknown field: {}. Valid fields: name, description, weight, weapon, armor", field)),
+        _ => CommandResult::Failure(format!(
+            "Unknown field: {}. Valid fields: name, description, weight, weapon, armor",
+            field
+        )),
     }
 }
 
@@ -2530,7 +2740,11 @@ pub async fn item_clone_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Item Clone Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Item Clone Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: item clone <uuid> [new_name]".to_string());
@@ -2568,23 +2782,40 @@ pub async fn item_clone_command(
     };
 
     // Clone components
-    let name = world.get::<&Name>(source_entity)
-        .map(|n| if let Some(ref new_name) = new_name { new_name.clone() } else { format!("{} (copy)", n.display) })
+    let name = world
+        .get::<&Name>(source_entity)
+        .map(|n| {
+            if let Some(ref new_name) = new_name {
+                new_name.clone()
+            } else {
+                format!("{} (copy)", n.display)
+            }
+        })
         .unwrap_or_else(|_| "Cloned Item".to_string());
-    
-    let description = world.get::<&Description>(source_entity)
+
+    let description = world
+        .get::<&Description>(source_entity)
         .ok()
         .map(|d| Description::new(d.short.clone(), d.long.clone()))
-        .unwrap_or_else(|| Description::new("A cloned item".to_string(), "A cloned item".to_string()));
-    
-    let containable = world.get::<&Containable>(source_entity)
+        .unwrap_or_else(|| {
+            Description::new("A cloned item".to_string(), "A cloned item".to_string())
+        });
+
+    let containable = world
+        .get::<&Containable>(source_entity)
         .ok()
         .map(|c| *c)
         .unwrap_or_else(|| Containable::new(1.0));
-    
-    let weapon = world.get::<&Weapon>(source_entity).ok().map(|w| *w);
-    let armor = world.get::<&Armor>(source_entity).ok().map(|a| *a);
-    
+
+    let weapon = world
+        .get::<&Weapon>(source_entity)
+        .ok()
+        .map(|w| w.deref().clone());
+    let armor = world
+        .get::<&Armor>(source_entity)
+        .ok()
+        .map(|a| a.deref().clone());
+
     drop(world);
 
     // Create the new item
@@ -2595,7 +2826,10 @@ pub async fn item_clone_command(
             EntityUuid(new_uuid),
             Name::new(&name),
             description,
-            Location::new(EntityId::from_uuid(area_uuid), EntityId::from_uuid(room_uuid)),
+            Location::new(
+                EntityId::from_uuid(area_uuid),
+                EntityId::from_uuid(room_uuid),
+            ),
             containable,
             Persistent,
         ));
@@ -2653,8 +2887,9 @@ pub async fn item_list_command(
     let world = context.entities().read().await;
     let mut items = Vec::new();
 
-    for (item_entity, (entity_uuid, name, location, containable)) in 
-        world.query::<(&EntityUuid, &Name, &Location, &Containable)>().iter() 
+    for (item_entity, entity_uuid, name, location, containable) in world
+        .query::<(Entity, &EntityUuid, &Name, &Location, &Containable)>()
+        .iter()
     {
         // Filter by current room
         if location.room_id.uuid() != room_uuid {
@@ -2679,7 +2914,12 @@ pub async fn item_list_command(
             "Item"
         };
 
-        items.push((entity_uuid.0, name.display.clone(), containable.weight, item_type));
+        items.push((
+            entity_uuid.0,
+            name.display.clone(),
+            containable.weight,
+            item_type,
+        ));
     }
 
     drop(world);
@@ -2732,28 +2972,40 @@ pub async fn item_info_command(
     };
 
     // Gather item information
-    let name = world.get::<&Name>(item_entity)
+    let name = world
+        .get::<&Name>(item_entity)
         .map(|n| n.display.clone())
         .unwrap_or_else(|_| "(unnamed)".to_string());
 
-    let description = world.get::<&Description>(item_entity)
+    let description = world
+        .get::<&Description>(item_entity)
         .map(|d| d.long.clone())
         .unwrap_or_else(|_| "(no description)".to_string());
 
-    let weight = world.get::<&Containable>(item_entity)
+    let weight = world
+        .get::<&Containable>(item_entity)
         .map(|c| c.weight)
         .unwrap_or(0.0);
 
-    let location = world.get::<&Location>(item_entity)
+    let location = world
+        .get::<&Location>(item_entity)
         .map(|l| (l.area_id.uuid(), l.room_id.uuid()))
         .ok();
 
-    let weapon_info = world.get::<&Weapon>(item_entity)
-        .map(|w| format!("Weapon: {}-{} {:?} damage", w.damage_min, w.damage_max, w.damage_type))
+    let weapon_info = world
+        .get::<&Weapon>(item_entity)
+        .map(|w| {
+            format!(
+                "Weapon: {}-{} {:?} damage",
+                w.damage_min, w.damage_max, w.damage_type
+            )
+        })
         .ok();
 
-    let armor_info = world.get::<&Armor>(item_entity)
-        .map(|a| format!("Armor: {} defense", a.defense))
+    let armor_info = world
+        .get::<&Armor>(item_entity)
+        // TODO: Fix this
+        .map(|a| format!("Armor: {:?} defense", a.defenses))
         .ok();
 
     drop(world);
@@ -2764,11 +3016,18 @@ pub async fn item_info_command(
          Name: {}\r\n\
          Description: {}\r\n\
          Weight: {:.1} lbs\r\n",
-        "=".repeat(80), target_uuid, name, description, weight
+        "=".repeat(80),
+        target_uuid,
+        name,
+        description,
+        weight
     );
 
     if let Some((area_uuid, room_uuid)) = location {
-        output.push_str(&format!("Location: Room {} (Area {})\r\n", room_uuid, area_uuid));
+        output.push_str(&format!(
+            "Location: Room {} (Area {})\r\n",
+            room_uuid, area_uuid
+        ));
     }
 
     if let Some(weapon) = weapon_info {
@@ -2786,8 +3045,10 @@ pub async fn item_info_command(
 // Item Template System
 // ============================================================================
 
-use std::collections::HashMap;
+use hecs::Entity;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::ops::Deref;
 
 /// Item template definition
 #[derive(Debug, Clone)]
@@ -2796,112 +3057,148 @@ struct ItemTemplate {
     description: String,
     weight: f32,
     weapon: Option<(i32, i32, DamageType)>, // (min_dmg, max_dmg, damage_type)
-    armor: Option<i32>, // defense rating
+    armor: Option<i32>,                     // defense rating
 }
 
 /// Predefined item templates for quick spawning
 static ITEM_TEMPLATES: Lazy<HashMap<&'static str, ItemTemplate>> = Lazy::new(|| {
     let mut templates = HashMap::new();
-    
+
     // Weapons
-    templates.insert("shortsword", ItemTemplate {
-        name: "Short Sword".to_string(),
-        description: "A well-balanced short sword with a sharp blade.".to_string(),
-        weight: 3.0,
-        weapon: Some((3, 6, DamageType::Slashing)),
-        armor: None,
-    });
-    
-    templates.insert("longsword", ItemTemplate {
-        name: "Long Sword".to_string(),
-        description: "A finely crafted longsword with excellent reach.".to_string(),
-        weight: 4.5,
-        weapon: Some((5, 10, DamageType::Slashing)),
-        armor: None,
-    });
-    
-    templates.insert("dagger", ItemTemplate {
-        name: "Dagger".to_string(),
-        description: "A small, sharp dagger perfect for quick strikes.".to_string(),
-        weight: 1.0,
-        weapon: Some((2, 4, DamageType::Piercing)),
-        armor: None,
-    });
-    
-    templates.insert("mace", ItemTemplate {
-        name: "Mace".to_string(),
-        description: "A heavy mace designed to crush armor.".to_string(),
-        weight: 5.0,
-        weapon: Some((4, 8, DamageType::Blunt)),
-        armor: None,
-    });
-    
-    templates.insert("staff", ItemTemplate {
-        name: "Wooden Staff".to_string(),
-        description: "A sturdy wooden staff imbued with arcane energy.".to_string(),
-        weight: 3.0,
-        weapon: Some((2, 6, DamageType::Arcane)),
-        armor: None,
-    });
-    
+    templates.insert(
+        "shortsword",
+        ItemTemplate {
+            name: "Short Sword".to_string(),
+            description: "A well-balanced short sword with a sharp blade.".to_string(),
+            weight: 3.0,
+            weapon: Some((3, 6, DamageType::Slashing)),
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "longsword",
+        ItemTemplate {
+            name: "Long Sword".to_string(),
+            description: "A finely crafted longsword with excellent reach.".to_string(),
+            weight: 4.5,
+            weapon: Some((5, 10, DamageType::Slashing)),
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "dagger",
+        ItemTemplate {
+            name: "Dagger".to_string(),
+            description: "A small, sharp dagger perfect for quick strikes.".to_string(),
+            weight: 1.0,
+            weapon: Some((2, 4, DamageType::Piercing)),
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "mace",
+        ItemTemplate {
+            name: "Mace".to_string(),
+            description: "A heavy mace designed to crush armor.".to_string(),
+            weight: 5.0,
+            weapon: Some((4, 8, DamageType::Blunt)),
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "staff",
+        ItemTemplate {
+            name: "Wooden Staff".to_string(),
+            description: "A sturdy wooden staff imbued with arcane energy.".to_string(),
+            weight: 3.0,
+            weapon: Some((2, 6, DamageType::Arcane)),
+            armor: None,
+        },
+    );
+
     // Armor
-    templates.insert("leather_armor", ItemTemplate {
-        name: "Leather Armor".to_string(),
-        description: "Light leather armor providing basic protection.".to_string(),
-        weight: 8.0,
-        weapon: None,
-        armor: Some(2),
-    });
-    
-    templates.insert("chainmail", ItemTemplate {
-        name: "Chainmail Armor".to_string(),
-        description: "Interlocking metal rings providing solid protection.".to_string(),
-        weight: 25.0,
-        weapon: None,
-        armor: Some(5),
-    });
-    
-    templates.insert("plate_armor", ItemTemplate {
-        name: "Plate Armor".to_string(),
-        description: "Heavy plate armor offering excellent protection.".to_string(),
-        weight: 45.0,
-        weapon: None,
-        armor: Some(8),
-    });
-    
+    templates.insert(
+        "leather_armor",
+        ItemTemplate {
+            name: "Leather Armor".to_string(),
+            description: "Light leather armor providing basic protection.".to_string(),
+            weight: 8.0,
+            weapon: None,
+            armor: Some(2),
+        },
+    );
+
+    templates.insert(
+        "chainmail",
+        ItemTemplate {
+            name: "Chainmail Armor".to_string(),
+            description: "Interlocking metal rings providing solid protection.".to_string(),
+            weight: 25.0,
+            weapon: None,
+            armor: Some(5),
+        },
+    );
+
+    templates.insert(
+        "plate_armor",
+        ItemTemplate {
+            name: "Plate Armor".to_string(),
+            description: "Heavy plate armor offering excellent protection.".to_string(),
+            weight: 45.0,
+            weapon: None,
+            armor: Some(8),
+        },
+    );
+
     // Misc items
-    templates.insert("torch", ItemTemplate {
-        name: "Torch".to_string(),
-        description: "A wooden torch wrapped in oil-soaked cloth.".to_string(),
-        weight: 1.0,
-        weapon: None,
-        armor: None,
-    });
-    
-    templates.insert("rope", ItemTemplate {
-        name: "Rope".to_string(),
-        description: "50 feet of sturdy hemp rope.".to_string(),
-        weight: 10.0,
-        weapon: None,
-        armor: None,
-    });
-    
-    templates.insert("backpack", ItemTemplate {
-        name: "Backpack".to_string(),
-        description: "A leather backpack for carrying supplies.".to_string(),
-        weight: 2.0,
-        weapon: None,
-        armor: None,
-    });
-    
-    templates.insert("potion", ItemTemplate {
-        name: "Health Potion".to_string(),
-        description: "A small vial containing a red healing liquid.".to_string(),
-        weight: 0.5,
-        weapon: None,
-        armor: None,
-    });
-    
+    templates.insert(
+        "torch",
+        ItemTemplate {
+            name: "Torch".to_string(),
+            description: "A wooden torch wrapped in oil-soaked cloth.".to_string(),
+            weight: 1.0,
+            weapon: None,
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "rope",
+        ItemTemplate {
+            name: "Rope".to_string(),
+            description: "50 feet of sturdy hemp rope.".to_string(),
+            weight: 10.0,
+            weapon: None,
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "backpack",
+        ItemTemplate {
+            name: "Backpack".to_string(),
+            description: "A leather backpack for carrying supplies.".to_string(),
+            weight: 2.0,
+            weapon: None,
+            armor: None,
+        },
+    );
+
+    templates.insert(
+        "potion",
+        ItemTemplate {
+            name: "Health Potion".to_string(),
+            description: "A small vial containing a red healing liquid.".to_string(),
+            weight: 0.5,
+            weapon: None,
+            armor: None,
+        },
+    );
+
     templates
 });
 
@@ -2913,7 +3210,11 @@ pub async fn item_spawn_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Item Spawn Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Item Spawn Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: item spawn <template_name> [quantity]".to_string());
@@ -2923,7 +3224,9 @@ pub async fn item_spawn_command(
     let quantity = if args.len() > 1 {
         match args[1].parse::<u32>() {
             Ok(q) if q > 0 && q <= 100 => q,
-            Ok(_) => return CommandResult::Failure("Quantity must be between 1 and 100".to_string()),
+            Ok(_) => {
+                return CommandResult::Failure("Quantity must be between 1 and 100".to_string());
+            }
             Err(_) => return CommandResult::Failure("Invalid quantity".to_string()),
         }
     } else {
@@ -2933,7 +3236,12 @@ pub async fn item_spawn_command(
     // Get the template
     let template = match ITEM_TEMPLATES.get(template_name.as_str()) {
         Some(t) => t.clone(),
-        None => return CommandResult::Failure(format!("Unknown template: {}. Use 'item templates' to see available templates.", template_name)),
+        None => {
+            return CommandResult::Failure(format!(
+                "Unknown template: {}. Use 'item templates' to see available templates.",
+                template_name
+            ));
+        }
     };
 
     // Get current location
@@ -2957,22 +3265,28 @@ pub async fn item_spawn_command(
                 EntityUuid(item_uuid),
                 Name::new(&template.name),
                 Description::new(template.name.clone(), template.description.clone()),
-                Location::new(EntityId::from_uuid(area_uuid), EntityId::from_uuid(room_uuid)),
+                Location::new(
+                    EntityId::from_uuid(area_uuid),
+                    EntityId::from_uuid(room_uuid),
+                ),
                 Containable::new(template.weight),
                 Persistent,
             ));
 
-            // Add weapon component if present
+            // Add a weapon component if present
             if let Some((min_dmg, max_dmg, damage_type)) = template.weapon {
                 let _ = world.insert_one(entity, Weapon::new(min_dmg, max_dmg, damage_type));
             }
 
-            // Add armor component if present
+            // Add an armor component if present
             if let Some(defense) = template.armor {
-                let _ = world.insert_one(entity, Armor {
-                    defense,
-                    armor_type: MaterialKind::Leather,
-                });
+                let _ = world.insert_one(
+                    entity,
+                    Armor {
+                        defenses: HashMap::new(),
+                        armor_type: MaterialKind::Leather,
+                    },
+                );
             }
 
             entity
@@ -2989,10 +3303,7 @@ pub async fn item_spawn_command(
             template.name, spawned_uuids[0]
         ))
     } else {
-        CommandResult::Success(format!(
-            "Spawned {} x{} items",
-            template.name, quantity
-        ))
+        CommandResult::Success(format!("Spawned {} x{} items", template.name, quantity))
     }
 }
 
@@ -3004,7 +3315,11 @@ pub async fn item_templates_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("Item Templates Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "Item Templates Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     let filter = if !args.is_empty() {
         Some(args.join(" ").to_lowercase())
@@ -3013,12 +3328,12 @@ pub async fn item_templates_command(
     };
 
     let mut output = format!("\r\nAvailable Item Templates\r\n{}\r\n", "=".repeat(80));
-    
+
     // Group templates by category
     let mut weapons = Vec::new();
     let mut armor = Vec::new();
     let mut misc = Vec::new();
-    
+
     for (key, template) in ITEM_TEMPLATES.iter() {
         // Apply filter if present
         if let Some(ref filter_str) = filter {
@@ -3026,7 +3341,7 @@ pub async fn item_templates_command(
                 continue;
             }
         }
-        
+
         if template.weapon.is_some() {
             weapons.push((key, template));
         } else if template.armor.is_some() {
@@ -3035,12 +3350,12 @@ pub async fn item_templates_command(
             misc.push((key, template));
         }
     }
-    
+
     // Sort each category
     weapons.sort_by_key(|(k, _)| *k);
     armor.sort_by_key(|(k, _)| *k);
     misc.sort_by_key(|(k, _)| *k);
-    
+
     // Display weapons
     if !weapons.is_empty() {
         output.push_str("\r\nWeapons:\r\n");
@@ -3056,7 +3371,7 @@ pub async fn item_templates_command(
             ));
         }
     }
-    
+
     // Display armor
     if !armor.is_empty() {
         output.push_str("\r\nArmor:\r\n");
@@ -3072,25 +3387,22 @@ pub async fn item_templates_command(
             ));
         }
     }
-    
+
     // Display misc items
     if !misc.is_empty() {
         output.push_str("\r\nMiscellaneous:\r\n");
         for (key, template) in misc {
-            output.push_str(&format!(
-                "  {:20} - {}\r\n",
-                key, template.name
-            ));
+            output.push_str(&format!("  {:20} - {}\r\n", key, template.name));
         }
     }
-    
-    output.push_str(&format!("\r\nUsage: item spawn <template_name> [quantity]\r\n"));
+
+    output.push_str(&format!(
+        "\r\nUsage: item spawn <template_name> [quantity]\r\n"
+    ));
     output.push_str(&format!("Example: item spawn longsword 5\r\n"));
-    
+
     CommandResult::Success(output)
 }
-
-
 
 // ============================================================================
 // Utility Functions
@@ -3098,7 +3410,7 @@ pub async fn item_templates_command(
 
 /// Find an entity by its UUID
 fn find_entity_by_uuid(world: &crate::ecs::GameWorld, uuid: uuid::Uuid) -> Option<EcsEntity> {
-    for (entity, entity_uuid) in world.query::<&EntityUuid>().iter() {
+    for (entity, entity_uuid) in world.query::<(Entity, &EntityUuid)>().iter() {
         if entity_uuid.0 == uuid {
             return Some(entity);
         }
@@ -3106,7 +3418,6 @@ fn find_entity_by_uuid(world: &crate::ecs::GameWorld, uuid: uuid::Uuid) -> Optio
     None
 }
 
-// Made with Bob
 
 
 // ============================================================================
@@ -3124,17 +3435,29 @@ mod tests {
         assert_eq!(get_reverse_direction("south"), Some("North".to_string()));
         assert_eq!(get_reverse_direction("east"), Some("West".to_string()));
         assert_eq!(get_reverse_direction("west"), Some("East".to_string()));
-        
+
         // Test vertical directions
         assert_eq!(get_reverse_direction("up"), Some("Down".to_string()));
         assert_eq!(get_reverse_direction("down"), Some("Up".to_string()));
-        
+
         // Test diagonal directions
-        assert_eq!(get_reverse_direction("northeast"), Some("Southwest".to_string()));
-        assert_eq!(get_reverse_direction("northwest"), Some("Southeast".to_string()));
-        assert_eq!(get_reverse_direction("southeast"), Some("Northwest".to_string()));
-        assert_eq!(get_reverse_direction("southwest"), Some("Northeast".to_string()));
-        
+        assert_eq!(
+            get_reverse_direction("northeast"),
+            Some("Southwest".to_string())
+        );
+        assert_eq!(
+            get_reverse_direction("northwest"),
+            Some("Southeast".to_string())
+        );
+        assert_eq!(
+            get_reverse_direction("southeast"),
+            Some("Northwest".to_string())
+        );
+        assert_eq!(
+            get_reverse_direction("southwest"),
+            Some("Northeast".to_string())
+        );
+
         // Test abbreviations
         assert_eq!(get_reverse_direction("n"), Some("South".to_string()));
         assert_eq!(get_reverse_direction("s"), Some("North".to_string()));
@@ -3146,11 +3469,11 @@ mod tests {
         assert_eq!(get_reverse_direction("nw"), Some("Southeast".to_string()));
         assert_eq!(get_reverse_direction("se"), Some("Northwest".to_string()));
         assert_eq!(get_reverse_direction("sw"), Some("Northeast".to_string()));
-        
+
         // Test case insensitivity
         assert_eq!(get_reverse_direction("NORTH"), Some("South".to_string()));
         assert_eq!(get_reverse_direction("NoRtH"), Some("South".to_string()));
-        
+
         // Test invalid directions
         assert_eq!(get_reverse_direction("invalid"), None);
         assert_eq!(get_reverse_direction(""), None);
@@ -3160,25 +3483,25 @@ mod tests {
     #[test]
     fn test_find_entity_by_uuid() {
         use hecs::World;
-        
+
         let mut world = World::new();
-        
+
         // Create test entities
         let uuid1 = uuid::Uuid::new_v4();
         let uuid2 = uuid::Uuid::new_v4();
         let uuid3 = uuid::Uuid::new_v4();
-        
+
         let entity1 = world.spawn((EntityUuid(uuid1), Name::new("Entity1")));
         let entity2 = world.spawn((EntityUuid(uuid2), Name::new("Entity2")));
         let _entity3 = world.spawn((Name::new("Entity3 No UUID"),)); // No UUID
-        
+
         // Test finding existing entities
         assert_eq!(find_entity_by_uuid(&world, uuid1), Some(entity1));
         assert_eq!(find_entity_by_uuid(&world, uuid2), Some(entity2));
-        
+
         // Test finding non-existent UUID
         assert_eq!(find_entity_by_uuid(&world, uuid3), None);
-        
+
         // Test with random UUID
         let random_uuid = uuid::Uuid::new_v4();
         assert_eq!(find_entity_by_uuid(&world, random_uuid), None);
@@ -3191,7 +3514,7 @@ mod tests {
         let vehicle = AreaKind::Vehicle;
         let building = AreaKind::Building;
         let dungeon = AreaKind::Dungeon;
-        
+
         assert_ne!(overworld, vehicle);
         assert_ne!(overworld, building);
         assert_ne!(overworld, dungeon);
@@ -3201,10 +3524,10 @@ mod tests {
     #[test]
     fn test_area_flags_operations() {
         let mut area = Area::new(AreaKind::Overworld);
-        
+
         // Test default state
         assert!(area.area_flags.is_empty());
-        
+
         // Test adding flags
         area.area_flags.push("no_recall".to_string());
         area.area_flags.push("safe_zone".to_string());
@@ -3218,7 +3541,7 @@ mod tests {
     fn test_exit_data_creation() {
         let dest_uuid = uuid::Uuid::new_v4();
         let exit = ExitData::new("north", EntityId::from_uuid(dest_uuid));
-        
+
         assert_eq!(exit.direction, "north");
         assert_eq!(exit.dest_id.uuid(), dest_uuid);
         assert!(!exit.closeable);
@@ -3234,18 +3557,20 @@ mod tests {
     fn test_exits_has_exit() {
         let mut exits = Exits::new();
         let dest_uuid = uuid::Uuid::new_v4();
-        
+
         // Initially no exits
         assert!(!exits.has_exit("north"));
-        
+
         // Add an exit
-        exits.exits.push(ExitData::new("north", EntityId::from_uuid(dest_uuid)));
-        
+        exits
+            .exits
+            .push(ExitData::new("north", EntityId::from_uuid(dest_uuid)));
+
         // Now has exit
         assert!(exits.has_exit("north"));
         assert!(exits.has_exit("NORTH")); // Case insensitive
         assert!(exits.has_exit("NoRtH")); // Case insensitive
-        
+
         // Still doesn't have other directions
         assert!(!exits.has_exit("south"));
         assert!(!exits.has_exit("east"));
@@ -3255,14 +3580,14 @@ mod tests {
     fn test_entity_id_conversions() {
         let uuid = uuid::Uuid::new_v4();
         let entity_id = EntityId::from_uuid(uuid);
-        
+
         // Test UUID extraction
         assert_eq!(entity_id.uuid(), uuid);
-        
+
         // Test that different UUIDs create different EntityIds
         let uuid2 = uuid::Uuid::new_v4();
         let entity_id2 = EntityId::from_uuid(uuid2);
-        
+
         assert_ne!(entity_id.uuid(), entity_id2.uuid());
     }
 
@@ -3280,11 +3605,11 @@ mod tests {
         // Test room name validation
         let room_name = "Test Room";
         assert!(!room_name.is_empty());
-        
+
         // Test UUID validation
         let valid_uuid = uuid::Uuid::new_v4();
         assert!(uuid::Uuid::parse_str(&valid_uuid.to_string()).is_ok());
-        
+
         let invalid_uuid = "not-a-uuid";
         assert!(uuid::Uuid::parse_str(invalid_uuid).is_err());
     }
@@ -3302,15 +3627,41 @@ mod tests {
     fn test_exit_direction_matching() {
         let mut exits = Exits::new();
         let dest_uuid = uuid::Uuid::new_v4();
-        
-        exits.exits.push(ExitData::new("north", EntityId::from_uuid(dest_uuid)));
-        exits.exits.push(ExitData::new("South", EntityId::from_uuid(dest_uuid)));
-        exits.exits.push(ExitData::new("EAST", EntityId::from_uuid(dest_uuid)));
-        
+
+        exits
+            .exits
+            .push(ExitData::new("north", EntityId::from_uuid(dest_uuid)));
+        exits
+            .exits
+            .push(ExitData::new("South", EntityId::from_uuid(dest_uuid)));
+        exits
+            .exits
+            .push(ExitData::new("EAST", EntityId::from_uuid(dest_uuid)));
+
         // Test case-insensitive matching
-        assert!(exits.exits.iter().any(|e| e.direction.to_lowercase() == "north"));
-        assert!(exits.exits.iter().any(|e| e.direction.to_lowercase() == "south"));
-        assert!(exits.exits.iter().any(|e| e.direction.to_lowercase() == "east"));
-        assert!(!exits.exits.iter().any(|e| e.direction.to_lowercase() == "west"));
+        assert!(
+            exits
+                .exits
+                .iter()
+                .any(|e| e.direction.to_lowercase() == "north")
+        );
+        assert!(
+            exits
+                .exits
+                .iter()
+                .any(|e| e.direction.to_lowercase() == "south")
+        );
+        assert!(
+            exits
+                .exits
+                .iter()
+                .any(|e| e.direction.to_lowercase() == "east")
+        );
+        assert!(
+            !exits
+                .exits
+                .iter()
+                .any(|e| e.direction.to_lowercase() == "west")
+        );
     }
 }

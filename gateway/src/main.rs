@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ mod pool;
 mod protocol;
 mod reconnection;
 mod rpc_client;
+mod rpc_server;
 mod session;
 mod shell;
 mod telnet;
@@ -32,13 +33,16 @@ mod websocket;
 
 use crate::context::ServerContext;
 use crate::rpc_client::RpcClientManager;
+use crate::rpc_server::GatewayRpcServer;
 use axum::{Router, routing::get};
 use clap::Parser;
 use sqlx::Executor;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tonic::transport::Server as TonicServer;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
+use wyldlands_common::proto::server_gateway_server::ServerGatewayServer;
 use wyldlands_gateway::config::{Arguments, Configuration};
 
 #[tokio::main]
@@ -159,6 +163,11 @@ async fn main() {
         websocket_config.addr.to_port()
     );
 
+    // Create gRPC server for receiving calls from world server (before telnet to avoid move)
+    let grpc_config = config.grpc.unwrap_or_default();
+    let grpc_addr: SocketAddr = grpc_config.addr.to_addr();
+    let grpc_server = GatewayRpcServer::new(context.connection_pool().clone());
+
     // Create telnet server
     let telnet_config = telnet::TelnetConfig::default();
     let telnet_server = telnet::TelnetServer::new(context, telnet_config);
@@ -175,8 +184,10 @@ async fn main() {
         telnet_bind_config.addr.to_ip(),
         telnet_bind_config.addr.to_port(),
     );
+    
+    info!("Starting gRPC server on {}", grpc_addr);
 
-    // Spawn both services
+    // Spawn all services
     let webapp_handle = tokio::spawn(async move {
         axum::serve(http_listener, webapp)
             .await
@@ -189,5 +200,15 @@ async fn main() {
         }
     });
 
-    let _ = tokio::join!(webapp_handle, telnet_handle);
+    let grpc_handle = tokio::spawn(async move {
+        if let Err(e) = TonicServer::builder()
+            .add_service(ServerGatewayServer::new(grpc_server))
+            .serve(grpc_addr)
+            .await
+        {
+            tracing::error!("gRPC server error: {}", e);
+        }
+    });
+
+    let _ = tokio::join!(webapp_handle, telnet_handle, grpc_handle);
 }

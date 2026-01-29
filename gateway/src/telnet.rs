@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -191,24 +191,25 @@ async fn handle_connection(
 
             // Call select_character RPC to load character in world server
             let rpc_client = context.rpc_client();
-            if let Some(client) = rpc_client.client().await {
-                match client
-                    .select_character(
-                        tarpc::context::current(),
-                        session_id.to_string(),
-                        avatar.entity_id.to_string(),
-                    )
-                    .await
-                {
-                    Ok(Ok(_character_info)) => {
-                        tracing::info!("Character loaded for session {}", session_id);
-                    }
-                    Ok(Err(e)) => {
-                        tracing::error!("Failed to select character: {:?}", e);
-                        stream
-                            .write_all(format!("Failed to load character: {:?}\r\n", e).as_bytes())
-                            .await?;
-                        continue; // Return to login loop
+            if let Some(mut client) = rpc_client.client().await {
+                let request = wyldlands_common::proto::SelectCharacterRequest {
+                    session_id: session_id.to_string(),
+                    entity_id: avatar.entity_id.to_string(),
+                };
+                
+                match client.select_character(request).await {
+                    Ok(response) => {
+                        let resp = response.into_inner();
+                        if resp.success {
+                            tracing::info!("Character loaded for session {}", session_id);
+                        } else {
+                            let error_msg = resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                            tracing::error!("Failed to select character: {}", error_msg);
+                            stream
+                                .write_all(format!("Failed to load character: {}\r\n", error_msg).as_bytes())
+                                .await?;
+                            continue; // Return to login loop
+                        }
                     }
                     Err(e) => {
                         tracing::error!("RPC error selecting character: {}", e);
@@ -301,72 +302,69 @@ async fn handle_connection(
 
                                         // Send command to server via RPC
                                         let rpc_client = context.rpc_client();
-                                        if let Some(client) = rpc_client.client().await {
-                                            match client
-                                                .send_command(
-                                                    tarpc::context::current(),
-                                                    session_id.to_string(),
-                                                    command.clone(),
-                                                )
-                                                .await
-                                            {
-                                                Ok(Ok(result)) => {
-                                                    // Send command output back to client
-                                                    for output in result.output {
-                                                        match output {
-                                                            wyldlands_common::gateway::GameOutput::Text(text) => {
-                                                                stream.write_all(text.as_bytes()).await?;
-                                                                stream.write_all(b"\r\n").await?;
-                                                            }
-                                                            wyldlands_common::gateway::GameOutput::FormattedText(text) => {
-                                                                stream.write_all(text.as_bytes()).await?;
-                                                                stream.write_all(b"\r\n").await?;
-                                                            }
-                                                            wyldlands_common::gateway::GameOutput::System(text) => {
-                                                                // Check if this is the return to character selection signal
-                                                                if text.contains("Returning to character selection") {
-                                                                    return_to_char_selection = true;
+                                        if let Some(mut client) = rpc_client.client().await {
+                                            let request = wyldlands_common::proto::SendCommandRequest {
+                                                session_id: session_id.to_string(),
+                                                command: command.clone(),
+                                            };
+                                            
+                                            match client.send_command(request).await {
+                                                Ok(response) => {
+                                                    let result = response.into_inner();
+                                                    if result.success {
+                                                        // Send command output back to client
+                                                        for output in result.output {
+                                                            use wyldlands_common::proto::game_output::OutputType;
+                                                            
+                                                            if let Some(output_type) = output.output_type {
+                                                                match output_type {
+                                                                    OutputType::Text(text_output) => {
+                                                                        stream.write_all(text_output.content.as_bytes()).await?;
+                                                                        stream.write_all(b"\r\n").await?;
+                                                                    }
+                                                                    OutputType::FormattedText(formatted) => {
+                                                                        stream.write_all(formatted.content.as_bytes()).await?;
+                                                                        stream.write_all(b"\r\n").await?;
+                                                                    }
+                                                                    OutputType::System(system) => {
+                                                                        // Check if this is the return to character selection signal
+                                                                        if system.message.contains("Returning to character selection") {
+                                                                            return_to_char_selection = true;
+                                                                        }
+                                                                        stream.write_all(system.message.as_bytes()).await?;
+                                                                        stream.write_all(b"\r\n").await?;
+                                                                    }
+                                                                    _ => {
+                                                                        // Handle other output types as needed
+                                                                    }
                                                                 }
-                                                                stream.write_all(text.as_bytes()).await?;
-                                                                stream.write_all(b"\r\n").await?;
-                                                            }
-                                                            _ => {
-                                                                // Handle other output types as needed
                                                             }
                                                         }
-                                                    }
 
-                                                    if let Some(error) = result.error {
+                                                        // If exit was signaled, break out of playing loop
+                                                        if return_to_char_selection {
+                                                            tracing::info!("Returning to character selection for session {}", session_id);
+                                                            // Transition session state back to character selection
+                                                            let _ = context
+                                                                .session_manager()
+                                                                .transition_session(
+                                                                    session_id,
+                                                                    wyldlands_common::session::SessionState::CharacterSelection,
+                                                                )
+                                                                .await;
+                                                            break 'playing;
+                                                        }
+                                                    } else {
+                                                        // Command failed
+                                                        let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+                                                        tracing::error!("Command error: {}", error_msg);
                                                         stream
                                                             .write_all(
-                                                                format!("Error: {}\r\n", error)
+                                                                format!("Command error: {}\r\n", error_msg)
                                                                     .as_bytes(),
                                                             )
                                                             .await?;
                                                     }
-
-                                                    // If exit was signaled, break out of playing loop
-                                                    if return_to_char_selection {
-                                                        tracing::info!("Returning to character selection for session {}", session_id);
-                                                        // Transition session state back to character selection
-                                                        let _ = context
-                                                            .session_manager()
-                                                            .transition_session(
-                                                                session_id,
-                                                                wyldlands_common::session::SessionState::CharacterSelection,
-                                                            )
-                                                            .await;
-                                                        break 'playing;
-                                                    }
-                                                }
-                                                Ok(Err(e)) => {
-                                                    tracing::error!("Command error: {:?}", e);
-                                                    stream
-                                                        .write_all(
-                                                            format!("Command error: {:?}\r\n", e)
-                                                                .as_bytes(),
-                                                        )
-                                                        .await?;
                                                 }
                                                 Err(e) => {
                                                     tracing::error!(

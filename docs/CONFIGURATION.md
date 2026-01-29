@@ -209,4 +209,3 @@ RUST_LOG=debug
 3. Ensure ports are not already in use
 4. Check firewall rules
 
-## Made with Bob

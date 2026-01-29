@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
 // limitations under the License.
 //
 
+use crate::ecs::EcsEntity;
 use crate::ecs::components::{Description, EntityUuid, Exits, Location, Name, Room};
 use crate::ecs::context::WorldContext;
 use crate::ecs::systems::CommandResult;
-use crate::ecs::EcsEntity;
+use hecs::Entity;
 use std::sync::Arc;
 
 #[tracing::instrument(skip(context), fields(entity_id = entity.id()))]
@@ -38,11 +39,10 @@ pub async fn look_command(
 
             // Try to find the room entity and get its details
             let mut room_info = None;
-            for (room_entity, (_room_comp, name, desc)) in
-                world.query::<(&Room, &Name, &Description)>().iter()
+            for (room_entity, _room_comp, name, desc) in
+                world.query::<(Entity, &Room, &Name, &Description)>().iter()
             {
-                if let Ok(room_uuid) = world.get::<&EntityUuid>(room_entity)
-                {
+                if let Ok(room_uuid) = world.get::<&EntityUuid>(room_entity) {
                     if room_uuid.0 == room_id.uuid() {
                         // Get exits for this room
                         let exit_directions = if let Ok(exits) = world.get::<&Exits>(room_entity) {
@@ -85,8 +85,8 @@ pub async fn look_command(
 
                 // List visible entities in the room (excluding self)
                 let mut entities_here = Vec::new();
-                for (other_entity, (other_loc, other_name)) in
-                    world.query::<(&Location, &Name)>().iter()
+                for (other_entity, other_loc, other_name) in
+                    world.query::<(Entity, &Location, &Name)>().iter()
                 {
                     if other_entity != entity
                         && other_loc.room_id == room_id
@@ -121,8 +121,8 @@ pub async fn look_command(
         // Try to find the target in the current room
         if let Ok(loc) = world.get::<&Location>(entity) {
             let mut found = None;
-            for (other_entity, (other_loc, other_name, other_desc)) in
-                world.query::<(&Location, &Name, &Description)>().iter()
+            for (other_entity, other_loc, other_name, other_desc) in
+                world.query::<(Entity, &Location, &Name, &Description)>().iter()
             {
                 if other_entity != entity
                     && other_loc.room_id == loc.room_id
@@ -137,7 +137,9 @@ pub async fn look_command(
                 }
             }
 
-            found.unwrap_or_else(|| CommandResult::Failure(format!("You don't see '{}' here.", target)))
+            found.unwrap_or_else(|| {
+                CommandResult::Failure(format!("You don't see '{}' here.", target))
+            })
         } else {
             CommandResult::Failure(format!("You don't see '{}' here.", target))
         }

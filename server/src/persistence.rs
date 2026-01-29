@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 use crate::ecs::components::*;
 use crate::ecs::registry::EntityRegistry;
 use crate::ecs::{EcsEntity, GameWorld};
+use hecs::Entity;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1162,7 +1163,7 @@ impl PersistenceManager {
         .map_err(|e| format!("Failed to load armor defense component: {}", e))?;
 
         if !rows.is_empty() {
-            let mut armor_defense = ArmorDefense::new();
+            let mut armor_defense = Armor::new();
             for (damage_kind_str, defense) in rows {
                 if let Some(damage_kind) = DamageType::from_str(&damage_kind_str) {
                     armor_defense.set_defense(damage_kind, defense);
@@ -2054,7 +2055,7 @@ impl PersistenceManager {
         world: &GameWorld,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
-        if let Ok(armor_defense) = world.get::<&ArmorDefense>(entity_id) {
+        if let Ok(armor_defense) = world.get::<&Armor>(entity_id) {
             // Delete existing defenses
             sqlx::query("DELETE FROM wyldlands.entity_armor_defense WHERE entity_id = $1")
                 .bind(entity_uuid)
@@ -2193,7 +2194,7 @@ impl PersistenceManager {
         for entity_uuid in dirty_uuids {
             // Find entity by UUID in the world
             let mut found_entity = None;
-            for (entity_id, entity_uuid_comp) in world.query::<&EntityUuid>().iter() {
+            for (entity_id, entity_uuid_comp) in world.query::<(Entity, &EntityUuid)>().iter() {
                 if entity_uuid_comp.0 == entity_uuid {
                     found_entity = Some(entity_id);
                     break;

@@ -181,5 +181,3 @@ If termionix doesn't meet requirements:
 ---
 
 **Decision**: Proceed with **termionix** as primary telnet library
-
-**Made with Bob**

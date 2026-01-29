@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 //! LLM Manager for coordinating multiple providers
 
-use super::providers::{LlmProvider, LmStudioProvider, OllamaProvider, OpenAiProvider};
-use super::types::{LlmConfig, LlmError, LlmRequest, LlmResponse};
+use super::providers::{LlmProvider, LmStudioProvider, MistralProvider, OllamaProvider, OpenAiProvider};
+use super::types::{CharacterContext, LLMConfig, LLMError, LLMRequest, LLMResponse};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -41,18 +41,19 @@ impl LlmManager {
     pub async fn register_provider(
         &self,
         name: impl Into<String>,
-        config: LlmConfig,
-    ) -> Result<(), LlmError> {
+        config: LLMConfig,
+    ) -> Result<(), LLMError> {
         let name = name.into();
         let provider: Box<dyn LlmProvider> = match config.provider.as_str() {
             "openai" => Box::new(OpenAiProvider::new(config)?),
             "ollama" => Box::new(OllamaProvider::new(config)?),
             "lmstudio" => Box::new(LmStudioProvider::new(config)?),
+            "mistral" => Box::new(MistralProvider::new(config).await?),
             _ => {
-                return Err(LlmError::ConfigError(format!(
+                return Err(LLMError::ConfigError(format!(
                     "Unknown provider type: {}",
                     config.provider
-                )))
+                )));
             }
         };
 
@@ -69,12 +70,12 @@ impl LlmManager {
     }
 
     /// Set the default provider
-    pub async fn set_default_provider(&self, name: impl Into<String>) -> Result<(), LlmError> {
+    pub async fn set_default_provider(&self, name: impl Into<String>) -> Result<(), LLMError> {
         let name = name.into();
         let providers = self.providers.read().await;
 
         if !providers.contains_key(&name) {
-            return Err(LlmError::ConfigError(format!(
+            return Err(LLMError::ConfigError(format!(
                 "Provider '{}' not registered",
                 name
             )));
@@ -87,19 +88,19 @@ impl LlmManager {
     }
 
     /// Get a provider by name
-    async fn get_provider(&self, name: &str) -> Result<Box<dyn LlmProvider>, LlmError> {
+    async fn get_provider(&self, name: &str) -> Result<Box<dyn LlmProvider>, LLMError> {
         let providers = self.providers.read().await;
         providers
             .get(name)
             .map(|p| {
                 // This is a workaround since we can't clone trait objects
                 // In a real implementation, you'd want to use Arc<dyn LlmProvider>
-                Err(LlmError::Other(
+                Err(LLMError::Other(
                     "Provider cloning not implemented".to_string(),
                 ))
             })
             .unwrap_or_else(|| {
-                Err(LlmError::ProviderUnavailable(format!(
+                Err(LLMError::ProviderUnavailable(format!(
                     "Provider '{}' not found",
                     name
                 )))
@@ -107,11 +108,11 @@ impl LlmManager {
     }
 
     /// Send a completion request using the default provider
-    pub async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    pub async fn complete(&self, request: LLMRequest) -> Result<LLMResponse, LLMError> {
         let default = self.default_provider.read().await;
         let provider_name = default
             .as_ref()
-            .ok_or_else(|| LlmError::ConfigError("No default provider set".to_string()))?;
+            .ok_or_else(|| LLMError::ConfigError("No default provider set".to_string()))?;
 
         self.complete_with_provider(provider_name, request).await
     }
@@ -120,11 +121,11 @@ impl LlmManager {
     pub async fn complete_with_provider(
         &self,
         provider_name: &str,
-        request: LlmRequest,
-    ) -> Result<LlmResponse, LlmError> {
+        request: LLMRequest,
+    ) -> Result<LLMResponse, LLMError> {
         let providers = self.providers.read().await;
         let provider = providers.get(provider_name).ok_or_else(|| {
-            LlmError::ProviderUnavailable(format!("Provider '{}' not found", provider_name))
+            LLMError::ProviderUnavailable(format!("Provider '{}' not found", provider_name))
         })?;
 
         provider.complete(request).await
@@ -153,7 +154,7 @@ impl LlmManager {
     }
 
     /// Remove a provider
-    pub async fn remove_provider(&self, name: &str) -> Result<(), LlmError> {
+    pub async fn remove_provider(&self, name: &str) -> Result<(), LLMError> {
         let mut providers = self.providers.write().await;
         providers.remove(name);
 
@@ -171,9 +172,9 @@ impl LlmManager {
         &self,
         model: impl Into<String>,
         prompt: impl Into<String>,
-    ) -> LlmRequest {
-        LlmRequest::new(model)
-            .with_message(super::types::LlmMessage::user(prompt))
+    ) -> LLMRequest {
+        LLMRequest::new(model)
+            .with_message(super::types::LLMMessage::user(prompt))
             .with_temperature(0.7)
             .with_max_tokens(500)
     }
@@ -184,12 +185,43 @@ impl LlmManager {
         model: impl Into<String>,
         system_prompt: impl Into<String>,
         user_message: impl Into<String>,
-    ) -> LlmRequest {
-        LlmRequest::new(model)
-            .with_message(super::types::LlmMessage::system(system_prompt))
-            .with_message(super::types::LlmMessage::user(user_message))
+    ) -> LLMRequest {
+        LLMRequest::new(model)
+            .with_message(super::types::LLMMessage::system(system_prompt))
+            .with_message(super::types::LLMMessage::user(user_message))
             .with_temperature(0.7)
             .with_max_tokens(500)
+    }
+
+    /// Create a request with character context
+    /// The context will be automatically converted to a system message
+    pub fn create_request_with_context(
+        &self,
+        model: impl Into<String>,
+        context: CharacterContext,
+        user_message: impl Into<String>,
+    ) -> LLMRequest {
+        LLMRequest::new(model)
+            .with_context(context)
+            .with_message(super::types::LLMMessage::user(user_message))
+            .with_temperature(0.7)
+            .with_max_tokens(500)
+            .build_with_context()
+    }
+
+    /// Create a request with character context and conversation history
+    pub fn create_contextual_conversation(
+        &self,
+        model: impl Into<String>,
+        context: CharacterContext,
+        conversation_history: Vec<super::types::LLMMessage>,
+    ) -> LLMRequest {
+        LLMRequest::new(model)
+            .with_context(context)
+            .with_messages(conversation_history)
+            .with_temperature(0.7)
+            .with_max_tokens(500)
+            .build_with_context()
     }
 }
 
@@ -213,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_provider() {
         let manager = LlmManager::new();
-        let config = LlmConfig::ollama("http://localhost:11434/api/chat", "llama2");
+        let config = LLMConfig::ollama("http://localhost:11434/api/chat", "llama2");
 
         let result = manager.register_provider("ollama", config).await;
         assert!(result.is_ok());
@@ -234,10 +266,10 @@ mod tests {
         let manager = LlmManager::new();
 
         // Register two providers
-        let config1 = LlmConfig::ollama("http://localhost:11434/api/chat", "llama2");
+        let config1 = LLMConfig::ollama("http://localhost:11434/api/chat", "llama2");
         manager.register_provider("ollama", config1).await.unwrap();
 
-        let config2 = LlmConfig::lmstudio("http://localhost:1234/v1/chat/completions", "local");
+        let config2 = LLMConfig::lmstudio("http://localhost:1234/v1/chat/completions", "local");
         manager
             .register_provider("lmstudio", config2)
             .await
@@ -260,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_provider() {
         let manager = LlmManager::new();
-        let config = LlmConfig::ollama("http://localhost:11434/api/chat", "llama2");
+        let config = LLMConfig::ollama("http://localhost:11434/api/chat", "llama2");
 
         manager.register_provider("ollama", config).await.unwrap();
         assert_eq!(manager.list_providers().await.len(), 1);
@@ -283,11 +315,8 @@ mod tests {
     #[test]
     fn test_create_request_with_system() {
         let manager = LlmManager::new();
-        let request = manager.create_request_with_system(
-            "gpt-4",
-            "You are a helpful assistant",
-            "Hello!",
-        );
+        let request =
+            manager.create_request_with_system("gpt-4", "You are a helpful assistant", "Hello!");
 
         assert_eq!(request.model, "gpt-4");
         assert_eq!(request.messages.len(), 2);
@@ -296,4 +325,4 @@ mod tests {
     }
 }
 
-// Made with Bob
+

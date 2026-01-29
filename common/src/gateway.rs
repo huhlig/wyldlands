@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 //! Gateway-to-Server Communication Protocol
 //!
-//! This module defines the RPC protocol for communication between the gateway
-//! and the world server using tarpc.
+//! This module defines shared types for communication between the gateway
+//! and the world server using gRPC.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,161 +28,6 @@ pub type SessionId = String;
 /// Persistent entity UUID (as string for RPC serialization)
 /// This represents the stable, database-backed UUID for entities
 pub type PersistentEntityId = String;
-
-/// Gateway-to-Server RPC service
-///
-/// This service defines all operations that the gateway can perform on the world server.
-#[tarpc::service]
-pub trait GatewayServer {
-    /// Authenticate the gateway connection with an auth key
-    ///
-    /// This must be called before any other RPC methods.
-    ///
-    /// # Arguments
-    /// * `auth_key` - The authentication key for gateway-to-server communication
-    ///
-    /// # Returns
-    /// * `Ok(())` - Authentication successful
-    /// * `Err(String)` - Authentication failed with error message
-    async fn authenticate_gateway(auth_key: String) -> Result<(), String>;
-    
-    /// Authenticate a session with credentials
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `username` - The username to authenticate
-    /// * `password` - The password (should be hashed by gateway)
-    ///
-    /// # Returns
-    /// * `Ok(AuthResult)` - Authentication result with entity ID if successful
-    async fn authenticate(
-        session_id: SessionId,
-        username: String,
-        password: String,
-    ) -> Result<AuthResult, AuthError>;
-
-    /// Create a new character for an authenticated session
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `character_name` - The desired character name
-    /// * `character_data` - Character creation data (race, class, attributes, etc.)
-    ///
-    /// # Returns
-    /// * `Ok(PersistentEntityId)` - The newly created character's entity ID
-    async fn create_character(
-        session_id: SessionId,
-        character_name: String,
-        character_data: CharacterCreationData,
-    ) -> Result<PersistentEntityId, CharacterError>;
-
-    /// Select a character for a session
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `entity_id` - The character's entity ID to select
-    ///
-    /// # Returns
-    /// * `Ok(CharacterInfo)` - Character information and initial game state
-    async fn select_character(
-        session_id: SessionId,
-        entity_id: PersistentEntityId,
-    ) -> Result<CharacterInfo, CharacterError>;
-
-    /// Send a command from a session to the world server
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `command` - The command string to execute
-    ///
-    /// # Returns
-    /// * `Ok(CommandResult)` - The result of command execution
-    async fn send_command(
-        session_id: SessionId,
-        command: String,
-    ) -> Result<CommandResult, CommandError>;
-
-    /// Notify server of session disconnection
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `reason` - The reason for disconnection
-    async fn session_disconnected(session_id: SessionId, reason: DisconnectReason);
-
-    /// Notify server of session reconnection
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `entity_id` - The character's entity ID
-    ///
-    /// # Returns
-    /// * `Ok(ReconnectResult)` - Reconnection result with queued events
-    async fn session_reconnected(
-        session_id: SessionId,
-        entity_id: PersistentEntityId,
-    ) -> Result<ReconnectResult, ReconnectError>;
-
-    /// Get the list of characters for an authenticated session
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    ///
-    /// # Returns
-    /// * `Ok(Vec<CharacterSummary>)` - List of available characters
-    async fn list_characters(session_id: SessionId) -> Result<Vec<CharacterSummary>, CharacterError>;
-
-    /// Heartbeat to keep session alive
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    ///
-    /// # Returns
-    /// * `Ok(())` - Heartbeat acknowledged
-    async fn heartbeat(session_id: SessionId) -> Result<(), SessionError>;
-    
-    /// Gateway-level heartbeat (independent of sessions)
-    ///
-    /// # Arguments
-    /// * `gateway_id` - The gateway identifier
-    ///
-    /// # Returns
-    /// * `Ok(())` - Heartbeat acknowledged
-    async fn gateway_heartbeat(gateway_id: String) -> Result<(), String>;
-}
-
-/// Server-to-Gateway RPC service
-///
-/// This service defines callbacks that the world server can make to the gateway.
-#[tarpc::service]
-pub trait ServerGateway {
-    /// Send output to a session
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `output` - The output to send to the client
-    async fn send_output(session_id: SessionId, output: GameOutput);
-
-    /// Send a prompt to a session
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `prompt` - The prompt text
-    async fn send_prompt(session_id: SessionId, prompt: String);
-
-    /// Notify gateway of entity state change
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `state_update` - The state update information
-    async fn entity_state_changed(session_id: SessionId, state_update: EntityStateUpdate);
-
-    /// Request session disconnection
-    ///
-    /// # Arguments
-    /// * `session_id` - The session identifier
-    /// * `reason` - The reason for disconnection
-    async fn disconnect_session(session_id: SessionId, reason: String);
-}
 
 // ============================================================================
 // Authentication Types

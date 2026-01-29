@@ -359,4 +359,48 @@ All implementations follow Rust best practices with:
 
 **Last Updated**: January 1, 2026  
 **Version**: 0.3.0 (Infrastructure Update)  
+
+---
+
+## 9. Command Introspection API ✅
+
+**Date Added**: January 29, 2026
+
+### What's New
+- Programmatic access to available commands based on avatar state
+- Role-based command filtering
+- Combat state awareness (infrastructure ready)
+
+### API Added
+- `CommandSystem::get_available_commands()` - Returns list of available commands
+- `AvailableCommand` struct - Serializable command information
+
+### Features
+- **Role Filtering**: Only returns commands the user has permission to use
+- **State Awareness**: Checks combat state (ready for future enhancements)
+- **Structured Output**: Returns name, aliases, and description for each command
+- **Sorted Results**: Commands returned in alphabetical order
+
+### Use Cases
+- Dynamic help generation
+- UI command palette generation
+- API documentation generation
+- Client-side command completion
+- Context-aware command suggestions
+
+### Code
+- **server/src/ecs/systems/command.rs** - Added `AvailableCommand` struct and `get_available_commands()` method
+- Full unit test coverage
+
+### Example Usage
+```rust
+let available = command_system.get_available_commands(context, entity).await;
+for cmd in available {
+    println!("{} ({}): {}", cmd.name, cmd.aliases.join(", "), cmd.description);
+}
+```
+
+### Integration Notes
+This API can be exposed through the RPC layer to allow gateway clients to dynamically discover available commands based on the player's current state and permissions.
+
 **Next Version**: 0.4.0 (Integration Complete)

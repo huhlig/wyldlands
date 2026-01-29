@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,14 +15,11 @@
 //
 
 use clap::Parser;
-use futures::prelude::*;
 use sqlx::Executor;
 use std::net::SocketAddr;
-use tarpc::server::{BaseChannel, Channel};
-use tarpc::tokio_serde::formats::Bincode;
-use tokio::net::TcpListener;
+use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
-use wyldlands_common::gateway::GatewayServer;
+use wyldlands_common::proto::gateway_server_server::GatewayServerServer;
 use wyldlands_server::config::{Arguments, Configuration};
 use wyldlands_server::listener::ServerRpcHandler;
 
@@ -105,49 +102,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get Server Address from configuration
     let listen_addr: SocketAddr = config.listener.addr.to_addr();
 
-    tracing::info!("Binding RPC server to {}", listen_addr);
-    let listener = TcpListener::bind(listen_addr).await?;
-    tracing::info!("RPC server listening on {}", listen_addr);
+    tracing::info!("Starting gRPC server on {}", listen_addr);
 
     // Create the RPC handler with world context
     let handler = ServerRpcHandler::new(config.listener.auth_key.as_str(), world_context);
     tracing::info!("Server RPC handler initialized with persistence");
 
-    // Accept connections
-    loop {
-        match listener.accept().await {
-            Ok((stream, peer_addr)) => {
-                tracing::info!("New RPC connection from {}", peer_addr);
+    // Start gRPC server
+    Server::builder()
+        .add_service(GatewayServerServer::new(handler))
+        .serve(listen_addr)
+        .await?;
 
-                let handler = handler.clone();
-
-                tokio::spawn(async move {
-                    // Set up the transport
-                    let transport = tarpc::serde_transport::new(
-                        tokio_util::codec::LengthDelimitedCodec::builder()
-                            .max_frame_length(16 * 1024 * 1024) // 16MB max frame
-                            .new_framed(stream),
-                        Bincode::default(),
-                    );
-
-                    // Create the server channel
-                    let server = BaseChannel::with_defaults(transport);
-
-                    // Serve requests - execute returns a stream of request handlers
-                    // Each request handler is a future that needs to be spawned
-                    server
-                        .execute(handler.serve())
-                        .for_each(|response| async move {
-                            tokio::spawn(response);
-                        })
-                        .await;
-
-                    tracing::info!("RPC connection closed: {}", peer_addr);
-                });
-            }
-            Err(e) => {
-                tracing::error!("Failed to accept connection: {}", e);
-            }
-        }
-    }
+    Ok(())
 }

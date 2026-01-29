@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Wyldlands gateway-server protocol provides **bidirectional RPC communication** between the gateway (connection handler) and the world server (game logic) using [tarpc](https://github.com/google/tarpc).
+The Wyldlands gateway-server protocol provides **bidirectional RPC communication** between the gateway (connection handler) and the world server (game logic) using [gRPC](https://grpc.io/) with [tonic](https://github.com/hyperium/tonic).
 
 ## Architecture
 
@@ -12,13 +12,13 @@ The Wyldlands gateway-server protocol provides **bidirectional RPC communication
 │     Gateway     │◄──────────────────►│  World Server   │
 │                 │                    │                 │
 │  - Telnet       │   Bidirectional    │  - Game Logic   │
-│  - WebSocket    │   RPC (tarpc)      │  - ECS Systems  │
+│  - WebSocket    │   RPC (gRPC)       │  - ECS Systems  │
 │  - Sessions     │                    │  - Persistence  │
 │                 │                    │                 │
 └─────────────────┘                    └─────────────────┘
         │                                      │
-        │ GatewayServer trait                 │ ServerGateway trait
-        │ (Gateway → Server)                  │ (Server → Gateway)
+        │ GatewayServer trait                  │ ServerGateway trait
+        │ (Gateway → Server)                   │ (Server → Gateway)
         │                                      │
         ▼                                      ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -301,7 +301,7 @@ enum StateUpdateType {
 
 ```rust
 use wyldlands_protocol::gateway::{GatewayServer, ServerGateway};
-use tarpc::{client, context, server};
+use tonic::{transport::Channel, Request, Response, Status};
 
 // Implement ServerGateway to receive calls from server
 #[derive(Clone)]
@@ -309,7 +309,7 @@ struct GatewayHandler {
     connection_pool: Arc<ConnectionPool>,
 }
 
-#[tarpc::server]
+#[tonic::async_trait]
 impl ServerGateway for GatewayHandler {
     async fn send_output(self, _: context::Context, session_id: SessionId, output: GameOutput) {
         // Route output to client connection
@@ -325,9 +325,9 @@ impl ServerGateway for GatewayHandler {
 }
 
 // Create client to call server
-async fn connect_to_server() -> GatewayServerClient {
-    let transport = tarpc::serde_transport::tcp::connect("127.0.0.1:5000", Json::default).await?;
-    GatewayServerClient::new(client::Config::default(), transport).spawn()
+async fn connect_to_server() -> GatewayServerClient<Channel> {
+    let channel = Channel::from_static("http://127.0.0.1:5000").connect().await?;
+    GatewayServerClient::new(channel)
 }
 ```
 
@@ -335,7 +335,7 @@ async fn connect_to_server() -> GatewayServerClient {
 
 ```rust
 use wyldlands_protocol::gateway::{GatewayServer, ServerGateway};
-use tarpc::{client, context, server};
+use tonic::{transport::Channel, Request, Response, Status};
 
 // Implement GatewayServer to receive calls from gateway
 #[derive(Clone)]
@@ -343,7 +343,7 @@ struct WorldServer {
     ecs: Arc<EcsWorld>,
 }
 
-#[tarpc::server]
+#[tonic::async_trait]
 impl GatewayServer for WorldServer {
     async fn authenticate(
         self,
@@ -370,9 +370,9 @@ impl GatewayServer for WorldServer {
 }
 
 // Create client to call gateway
-async fn connect_to_gateway() -> ServerGatewayClient {
-    let transport = tarpc::serde_transport::tcp::connect("127.0.0.1:5001", Json::default).await?;
-    ServerGatewayClient::new(client::Config::default(), transport).spawn()
+async fn connect_to_gateway() -> ServerGatewayClient<Channel> {
+    let channel = Channel::from_static("http://127.0.0.1:5001").connect().await?;
+    ServerGatewayClient::new(channel)
 }
 ```
 
@@ -416,7 +416,8 @@ Errors are serialized and transmitted over RPC, allowing proper error handling o
 
 ### Async/Await
 - All methods are async for non-blocking I/O
-- tarpc handles connection pooling and multiplexing
+- gRPC/tonic handles connection pooling and multiplexing
+- Protocol Buffers provide efficient serialization
 
 ### Heartbeats
 - Gateway sends periodic heartbeats (30s default)

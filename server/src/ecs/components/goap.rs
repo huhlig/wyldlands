@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -210,7 +210,7 @@ impl GoapPlanner {
     /// Plan a sequence of actions to achieve a goal using A*
     pub fn plan(&mut self, goal: &GoapGoal) -> Option<VecDeque<String>> {
         let mut open_list: Vec<PlanNode> = Vec::new();
-        let mut closed_list: Vec<WorldState> = Vec::new();
+        let mut closed_list: Vec<PlanNode> = Vec::new();
 
         // Start node
         let start_node = PlanNode {
@@ -241,35 +241,35 @@ impl GoapPlanner {
             if goal.is_satisfied(&current.state) {
                 // Reconstruct plan by backtracking through parents
                 let mut plan = VecDeque::new();
-                let mut actions_taken = Vec::new();
-                let mut current_action = current.action.clone();
-                let mut current_parent = current.parent;
+                let mut node_chain = Vec::new();
                 
-                // Collect actions by following parent chain
-                while let Some(action_id) = current_action {
-                    actions_taken.push(action_id);
-                    if let Some(parent_idx) = current_parent {
+                // Follow parent chain to reconstruct full path
+                let mut current_node = current.clone();
+                loop {
+                    node_chain.push(current_node.clone());
+                    if let Some(parent_idx) = current_node.parent {
                         if parent_idx < closed_list.len() {
-                            // In a full implementation, we'd store parent references
-                            // For now, just add the action
+                            current_node = closed_list[parent_idx].clone();
+                        } else {
                             break;
                         }
                     } else {
                         break;
                     }
-                    current_action = None;
-                    current_parent = None;
                 }
-
-                actions_taken.reverse();
-                for action_id in actions_taken {
-                    plan.push_back(action_id);
+                
+                // Extract actions from node chain in reverse order (skip last node which has no action)
+                node_chain.reverse();
+                for node in &node_chain {
+                    if let Some(ref action_id) = node.action {
+                        plan.push_back(action_id.clone());
+                    }
                 }
 
                 return Some(plan);
             }
 
-            closed_list.push(current.state.clone());
+            closed_list.push(current.clone());
 
             // Expand neighbors (try each action)
             for action in &self.actions {
@@ -281,7 +281,7 @@ impl GoapPlanner {
                 action.apply_effects(&mut new_state);
 
                 // Skip if already in closed list
-                if closed_list.iter().any(|s| s == &new_state) {
+                if closed_list.iter().any(|n| n.state == new_state) {
                     continue;
                 }
 
@@ -317,7 +317,26 @@ impl GoapPlanner {
             return true;
         }
 
-        // Select a new goal
+        // If we have a current goal that's still satisfied, keep it
+        if let Some(ref goal_id) = self.current_goal {
+            if let Some(goal) = self.get_goal(goal_id) {
+                if goal.is_satisfied(&self.world_state) {
+                    return true;
+                }
+            }
+        }
+
+        // Check if any goal is already satisfied (no planning needed)
+        if let Some(satisfied_goal) = self.goals
+            .iter()
+            .find(|g| g.active && g.is_satisfied(&self.world_state))
+        {
+            self.current_goal = Some(satisfied_goal.id.clone());
+            self.current_plan.clear();
+            return true;
+        }
+
+        // Select a new unsatisfied goal
         let goal = match self.select_goal() {
             Some(g) => g.clone(),
             None => return false,
@@ -417,6 +436,132 @@ mod tests {
         assert_eq!(planner.current_plan.len(), 1);
         assert_eq!(planner.next_action(), Some("move_to_work".to_string()));
     }
+
+    #[test]
+    fn test_goap_planner_empty_plan() {
+        let mut planner = GoapPlanner::new();
+        
+        // No actions or goals
+        assert!(!planner.update());
+        assert!(planner.next_action().is_none());
+    }
+
+    #[test]
+    fn test_goap_planner_already_satisfied() {
+        let mut planner = GoapPlanner::new();
+        
+        // Goal is already satisfied
+        planner.set_state("at_work", true);
+        
+        let goal = GoapGoal::new("be_at_work", "Be at work", 10)
+            .with_condition("at_work", true);
+        planner.add_goal(goal);
+        
+        // Should succeed with empty plan since goal is already met
+        assert!(planner.update());
+        assert_eq!(planner.current_plan.len(), 0);
+    }
+
+    #[test]
+    fn test_goap_action_disabled() {
+        let mut planner = GoapPlanner::new();
+        
+        planner.set_state("at_home", true);
+        
+        let mut action = GoapAction::new("move_to_work", "Move to work")
+            .with_precondition("at_home", true)
+            .with_effect("at_work", true)
+            .with_cost(1.0);
+        action.enabled = false;
+        planner.add_action(action);
+        
+        let goal = GoapGoal::new("be_at_work", "Be at work", 10)
+            .with_condition("at_work", true);
+        planner.add_goal(goal);
+        
+        // Should fail because action is disabled
+        assert!(!planner.update());
+    }
+
+    #[test]
+    fn test_goap_planner_multi_step_plan() {
+        let mut planner = GoapPlanner::new();
+        
+        // Start with nothing
+        planner.set_state("has_key", false);
+        planner.set_state("door_unlocked", false);
+        planner.set_state("inside", false);
+        
+        // Action 1: Get key
+        let get_key = GoapAction::new("get_key", "Get the key")
+            .with_effect("has_key", true)
+            .with_cost(1.0);
+        planner.add_action(get_key);
+        
+        // Action 2: Unlock door (requires key)
+        let unlock = GoapAction::new("unlock_door", "Unlock the door")
+            .with_precondition("has_key", true)
+            .with_effect("door_unlocked", true)
+            .with_cost(1.0);
+        planner.add_action(unlock);
+        
+        // Action 3: Enter (requires unlocked door)
+        let enter = GoapAction::new("enter", "Enter the building")
+            .with_precondition("door_unlocked", true)
+            .with_effect("inside", true)
+            .with_cost(1.0);
+        planner.add_action(enter);
+        
+        // Goal: Be inside
+        let goal = GoapGoal::new("be_inside", "Be inside", 10)
+            .with_condition("inside", true);
+        planner.add_goal(goal);
+        
+        // Should create a 3-step plan
+        assert!(planner.update());
+        assert_eq!(planner.current_plan.len(), 3);
+        assert_eq!(planner.next_action(), Some("get_key".to_string()));
+        assert_eq!(planner.next_action(), Some("unlock_door".to_string()));
+        assert_eq!(planner.next_action(), Some("enter".to_string()));
+    }
+
+    #[test]
+    fn test_goap_planner_choose_cheaper_path() {
+        let mut planner = GoapPlanner::new();
+        
+        planner.set_state("at_start", true);
+        planner.set_state("at_goal", false);
+        
+        // Expensive direct path
+        let expensive = GoapAction::new("expensive_route", "Take expensive route")
+            .with_precondition("at_start", true)
+            .with_effect("at_goal", true)
+            .with_cost(10.0);
+        planner.add_action(expensive);
+        
+        // Cheaper path through waypoint
+        let to_waypoint = GoapAction::new("to_waypoint", "Go to waypoint")
+            .with_precondition("at_start", true)
+            .with_effect("at_waypoint", true)
+            .with_cost(2.0);
+        planner.add_action(to_waypoint);
+        
+        let from_waypoint = GoapAction::new("from_waypoint", "Go from waypoint")
+            .with_precondition("at_waypoint", true)
+            .with_effect("at_goal", true)
+            .with_cost(2.0);
+        planner.add_action(from_waypoint);
+        
+        let goal = GoapGoal::new("reach_goal", "Reach the goal", 10)
+            .with_condition("at_goal", true);
+        planner.add_goal(goal);
+        
+        // Should choose the cheaper 2-step path (cost 4) over expensive direct (cost 10)
+        assert!(planner.update());
+        assert_eq!(planner.current_plan.len(), 2);
+        assert_eq!(planner.next_action(), Some("to_waypoint".to_string()));
+        assert_eq!(planner.next_action(), Some("from_waypoint".to_string()));
+    }
 }
 
-// Made with Bob
+

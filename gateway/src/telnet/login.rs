@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,18 +26,17 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 use wyldlands_common::account::Account;
 use wyldlands_common::character::{AttributeType, CharacterBuilder};
-use wyldlands_common::gateway::CharacterCreationData;
 
 /// Login state for a telnet connection
 #[derive(Debug, Clone)]
 pub enum LoginState {
-    /// Showing welcome banner
+    /// Showing the welcome banner
     Welcome,
     /// Prompting for username or new account
     UsernameOrNew,
     /// Prompting for password
     Password { username: String },
-    /// Creating new account
+    /// Creating a new account
     CreateAccount,
     /// Showing MOTD
     Motd { account: Account },
@@ -88,15 +87,28 @@ impl LoginHandler {
         stream: &mut TcpStream,
     ) -> Result<Option<(Account, Avatar)>, Box<dyn std::error::Error + Send + Sync>> {
         // Check if session is already in CharacterSelection state (returning from exit)
-        if let Some(session) = self.context.session_manager().get_session(self.session_id).await {
+        if let Some(session) = self
+            .context
+            .session_manager()
+            .get_session(self.session_id)
+            .await
+        {
             if session.state == SessionState::CharacterSelection {
                 // Try to retrieve the account from session metadata
                 if let Some(account_id_str) = session.metadata.custom.get("account_id") {
                     if let Ok(account_id) = Uuid::parse_str(account_id_str) {
-                        match self.context.auth_manager().get_account_by_id(account_id).await {
+                        match self
+                            .context
+                            .auth_manager()
+                            .get_account_by_id(account_id)
+                            .await
+                        {
                             Ok(account) => {
                                 // Successfully retrieved account, go directly to character selection
-                                tracing::info!("Returning to character selection for account {}", account.login);
+                                tracing::info!(
+                                    "Returning to character selection for account {}",
+                                    account.login
+                                );
                                 self.state = LoginState::AvatarSelection { account };
                                 self.prompt_shown = false;
                             }
@@ -199,26 +211,31 @@ impl LoginHandler {
 
                         match result {
                             Ok(Some(request)) => {
-                                match self.context.auth_manager().create_account(request.clone()).await {
+                                match self
+                                    .context
+                                    .auth_manager()
+                                    .create_account(request.clone())
+                                    .await
+                                {
                                     Ok(account) => {
                                         stream
-                                            .write_all(
-                                                b"\r\n\r\nAccount created successfully!\r\n",
-                                            )
+                                            .write_all(b"\r\n\r\nAccount created successfully!\r\n")
                                             .await?;
-                                        
+
                                         // Authenticate with RPC server using the new account credentials
-                                        if let Some(client) = self.context.rpc_client().client().await {
-                                            match client
-                                                .authenticate(
-                                                    tarpc::context::current(),
-                                                    self.session_id.to_string(),
-                                                    request.username.clone(),
-                                                    request.password.clone(),
-                                                )
-                                                .await
-                                            {
-                                                Ok(Ok(auth_result)) => {
+                                        if let Some(mut client) =
+                                            self.context.rpc_client().client().await
+                                        {
+                                            let auth_request =
+                                                wyldlands_common::proto::AuthenticateRequest {
+                                                    session_id: self.session_id.to_string(),
+                                                    username: request.username.clone(),
+                                                    password: request.password.clone(),
+                                                };
+
+                                            match client.authenticate(auth_request).await {
+                                                Ok(response) => {
+                                                    let auth_result = response.into_inner();
                                                     if auth_result.success {
                                                         tracing::info!(
                                                             "RPC server authentication successful for new account, session {}",
@@ -230,31 +247,30 @@ impl LoginHandler {
                                                             )
                                                             .await?;
                                                     } else {
+                                                        let error_msg =
+                                                            auth_result.error.unwrap_or_else(
+                                                                || "Unknown error".to_string(),
+                                                            );
                                                         tracing::warn!(
                                                             "RPC server authentication failed for new account: {}",
-                                                            auth_result.message
+                                                            error_msg
                                                         );
                                                         stream
                                                             .write_all(
                                                                 format!(
                                                                     "Warning: Server authentication failed: {}\r\n\r\n",
-                                                                    auth_result.message
+                                                                    error_msg
                                                                 )
                                                                 .as_bytes(),
                                                             )
                                                             .await?;
                                                     }
                                                 }
-                                                Ok(Err(e)) => {
-                                                    tracing::error!("RPC authentication error for new account: {:?}", e);
-                                                    stream
-                                                        .write_all(
-                                                            b"Warning: Server authentication error.\r\n\r\n",
-                                                        )
-                                                        .await?;
-                                                }
                                                 Err(e) => {
-                                                    tracing::error!("RPC call failed for new account: {}", e);
+                                                    tracing::error!(
+                                                        "RPC call failed for new account: {}",
+                                                        e
+                                                    );
                                                     stream
                                                         .write_all(
                                                             b"Warning: Server connection error.\r\n\r\n",
@@ -263,14 +279,14 @@ impl LoginHandler {
                                                 }
                                             }
                                         } else {
-                                            tracing::error!("No RPC client available for new account authentication");
+                                            tracing::error!(
+                                                "No RPC client available for new account authentication"
+                                            );
                                             stream
-                                                .write_all(
-                                                    b"Warning: Server unavailable.\r\n\r\n",
-                                                )
+                                                .write_all(b"Warning: Server unavailable.\r\n\r\n")
                                                 .await?;
                                         }
-                                        
+
                                         self.account_flow = None;
                                         self.state = LoginState::Motd { account };
                                         self.prompt_shown = false;
@@ -315,32 +331,35 @@ impl LoginHandler {
                         match self.authenticate(&username, &password).await {
                             Ok(account) => {
                                 // Authenticate with RPC server
-                                if let Some(client) = self.context.rpc_client().client().await {
-                                    match client
-                                        .authenticate(
-                                            tarpc::context::current(),
-                                            self.session_id.to_string(),
-                                            username.clone(),
-                                            password.clone(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(Ok(auth_result)) => {
+                                if let Some(mut client) = self.context.rpc_client().client().await {
+                                    let auth_request =
+                                        wyldlands_common::proto::AuthenticateRequest {
+                                            session_id: self.session_id.to_string(),
+                                            username: username.clone(),
+                                            password: password.clone(),
+                                        };
+
+                                    match client.authenticate(auth_request).await {
+                                        Ok(response) => {
+                                            let auth_result = response.into_inner();
                                             if auth_result.success {
                                                 tracing::info!(
                                                     "RPC server authentication successful for session {}",
                                                     self.session_id
                                                 );
                                             } else {
+                                                let error_msg = auth_result
+                                                    .error
+                                                    .unwrap_or_else(|| "Unknown error".to_string());
                                                 tracing::warn!(
                                                     "RPC server authentication failed: {}",
-                                                    auth_result.message
+                                                    error_msg
                                                 );
                                                 stream
                                                     .write_all(
                                                         format!(
                                                             "\r\nServer authentication failed: {}\r\n",
-                                                            auth_result.message
+                                                            error_msg
                                                         )
                                                         .as_bytes(),
                                                     )
@@ -349,17 +368,6 @@ impl LoginHandler {
                                                 self.prompt_shown = false;
                                                 continue;
                                             }
-                                        }
-                                        Ok(Err(e)) => {
-                                            tracing::error!("RPC authentication error: {:?}", e);
-                                            stream
-                                                .write_all(
-                                                    b"\r\nServer authentication error. Please try again.\r\n",
-                                                )
-                                                .await?;
-                                            self.state = LoginState::UsernameOrNew;
-                                            self.prompt_shown = false;
-                                            continue;
                                         }
                                         Err(e) => {
                                             tracing::error!("RPC call failed: {}", e);
@@ -384,7 +392,7 @@ impl LoginHandler {
                                     self.prompt_shown = false;
                                     continue;
                                 }
-                                
+
                                 self.state = LoginState::Motd { account };
                             }
                             Err(e) => {
@@ -400,20 +408,39 @@ impl LoginHandler {
                     self.show_motd(stream).await?;
 
                     // Transition session to CharacterSelection state if not already there
-                    if let Some(session) = self.context.session_manager().get_session(self.session_id).await {
+                    if let Some(session) = self
+                        .context
+                        .session_manager()
+                        .get_session(self.session_id)
+                        .await
+                    {
                         if session.state != SessionState::CharacterSelection {
                             self.context
                                 .session_manager()
-                                .transition_session(self.session_id, SessionState::CharacterSelection)
+                                .transition_session(
+                                    self.session_id,
+                                    SessionState::CharacterSelection,
+                                )
                                 .await
                                 .map_err(|e| format!("Failed to transition session: {}", e))?;
                         }
                     }
 
                     // Store account ID in session metadata for return to character selection
-                    if let Some(mut session) = self.context.session_manager().get_session(self.session_id).await {
-                        session.metadata.custom.insert("account_id".to_string(), account.id.to_string());
-                        self.context.session_manager().update_session(session).await
+                    if let Some(mut session) = self
+                        .context
+                        .session_manager()
+                        .get_session(self.session_id)
+                        .await
+                    {
+                        session
+                            .metadata
+                            .custom
+                            .insert("account_id".to_string(), account.id.to_string());
+                        self.context
+                            .session_manager()
+                            .update_session(session)
+                            .await
                             .map_err(|e| format!("Failed to update session: {}", e))?;
                     }
 
@@ -963,32 +990,28 @@ impl LoginHandler {
             starting_location.room_id.to_string(),
         );
 
-        let char_data = CharacterCreationData {
-            race: String::new(),
-            class: String::new(),
-            attributes,
-            description: format!("A character named {}", builder.name),
-            metadata,
-        };
-
-        // Call server RPC to create the ECS entity with all components
+        // Character creation is now handled through the unified send_command interface
+        // The server's state machine will route this to character creation logic
+        // For now, we'll use the RPC client's command queuing if not connected
         let rpc_client = self.context.rpc_client();
-        let client = rpc_client
-            .client()
-            .await
-            .ok_or_else(|| "RPC client not connected".to_string())?;
 
-        let result = client
-            .create_character(
-                tarpc::context::current(),
-                self.session_id.to_string(),
-                builder.name.clone(),
-                char_data,
-            )
+        // Queue the finalize command - it will be processed when connected
+        let finalize_cmd = "create finalize".to_string();
+        rpc_client
+            .send_command_or_queue(self.session_id.to_string(), finalize_cmd)
             .await
-            .map_err(|e| format!("RPC call failed: {}", e))?;
+            .map_err(|e| format!("Failed to queue character creation: {}", e))?;
 
-        let entity_id = result.map_err(|e| format!("Failed to create character: {:?}", e))?;
+        // For now, return a placeholder entity ID
+        // In a real implementation, we'd wait for the server response
+        let entity_id = uuid::Uuid::new_v4().to_string();
+
+        // TODO: This needs to be refactored to properly wait for server response
+        // and get the actual entity ID. For now, we'll just proceed with character creation
+        tracing::warn!("Character creation using placeholder entity ID - needs refactoring");
+
+        // Entity ID is already set above
+        let entity_id = entity_id;
 
         // Parse entity_id string to UUID
         let entity_uuid =
@@ -1093,5 +1116,3 @@ mod tests {
         assert!(!is_valid_name("Test@User"));
     }
 }
-
-

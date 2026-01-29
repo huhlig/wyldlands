@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -121,7 +121,7 @@ impl NpcDialogue {
             None
         } else {
             use rand::Rng;
-            let idx = rand::thread_rng().gen_range(0..self.fallback_responses.len());
+            let idx = rand::rng().gen_range(0..self.fallback_responses.len());
             Some(&self.fallback_responses[idx])
         }
     }
@@ -352,4 +352,4 @@ mod tests {
     }
 }
 
-// Made with Bob
+

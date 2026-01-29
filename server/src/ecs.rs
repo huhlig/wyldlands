@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,12 +37,14 @@ pub type EntityId = EcsEntity;
 pub type GameWorld = World;
 
 // Re-exports
+pub mod character_builder;
 pub mod components;
 pub mod events;
 pub mod registry;
 pub mod systems;
 
 pub use registry::EntityRegistry;
+pub use character_builder::ServerCharacterBuilder;
 
 pub mod context;
 #[cfg(test)]

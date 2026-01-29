@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,9 +18,8 @@
 //!
 //! This crate defines shared types and communication protocols used across Wyldlands MUD:
 //! - Common data types (Account, Avatar, Session)
-//! - Gateway-to-Server RPC protocol
+//! - Gateway-to-Server RPC protocol (gRPC)
 //! - MUD Server Data Protocol (MSDP)
-//! - Legacy Mudnet protocol
 
 pub mod account;
 pub mod character;
@@ -29,36 +28,12 @@ pub mod msdp;
 pub mod session;
 pub mod utility;
 
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use tarpc::serde::{Deserialize, Serialize};
-
-#[tarpc::service]
-pub trait Mudnet {
-    async fn message(addr: SocketAddr, str: String);
-    async fn status(str: String);
-    async fn mud_server_data(table: MudServerDataTable);
-    async fn mud_server_status(status: MudServerStatus);
+// gRPC generated code
+pub mod proto {
+    tonic::include_proto!("wyldlands.gateway");
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MudServerDataValue {
-    String(String),
-    Array(MudServerDataArray),
-    Table(MudServerDataTable),
-}
-
-///
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct MudServerDataArray(Vec<MudServerDataValue>);
-
-///
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct MudServerDataTable(BTreeMap<String, MudServerDataValue>);
-
-///
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct MudServerStatus(BTreeMap<String, Vec<String>>);
+// Mudnet protocol removed - using gRPC now
 
 
 

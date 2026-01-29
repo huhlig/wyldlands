@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ mod providers;
 mod types;
 
 pub use manager::LlmManager;
-pub use providers::{LlmProvider, OpenAiProvider, OllamaProvider, LmStudioProvider};
-pub use types::{LlmRequest, LlmResponse, LlmMessage, LlmRole, LlmError, LlmConfig};
+pub use providers::{LlmProvider, OpenAiProvider, OllamaProvider, LmStudioProvider, MistralProvider};
+pub use types::{LLMRequest, LLMResponse, LLMMessage, LLMRole, LLMError, LLMConfig, CharacterContext, AvailableCommand};
 
-// Made with Bob

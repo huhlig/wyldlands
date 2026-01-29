@@ -194,7 +194,7 @@ pub struct WebSocketConfig {
 - `docs/development/GATEWAY_PROTOCOL.md` (509 lines) - Protocol documentation
 
 **Features**:
-- Bidirectional tarpc-based communication
+- Bidirectional gRPC-based communication
 - Type-safe message passing with 50+ data structures
 - Comprehensive error handling
 
@@ -403,7 +403,8 @@ tokio-tungstenite = "0.26"
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono"] }
 
 # RPC
-tarpc = { version = "0.37", features = ["full"] }
+tonic = "0.12"  # gRPC framework
+prost = "0.13"  # Protocol Buffers
 
 # Dev Dependencies
 criterion = { version = "0.5", features = ["async_tokio"] }
@@ -489,7 +490,7 @@ tokio-test = "0.4"
 1. **Axum 0.8 API Changes**: Router state management changed, requires `.with_state()` after routes
 2. **sqlx Compile-Time Verification**: Runtime queries more flexible than compile-time macros
 3. **Trait Bounds**: WebSocket cannot be `Sync` due to internal IO trait object
-4. **tarpc Integration**: Manual trait implementation works better than attribute macros
+4. **gRPC Integration**: Manual trait implementation works better than attribute macros
 5. **Borrow Checker**: Two-phase approach (collect then mutate) solves many issues
 
 ### Architecture Decisions

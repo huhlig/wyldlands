@@ -98,7 +98,7 @@ Wyldlands uses a distributed architecture:
 - **World Server**: Runs game logic using an Entity Component System (ECS)
 - **PostgreSQL**: Stores persistent session and world data
 
-Communication between gateway and world server uses tarpc RPC framework.
+Communication between gateway and world server uses gRPC.
 
 ## Development
 

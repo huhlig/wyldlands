@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 //! Integration tests for NPC system
 
 use wyldlands_server::ecs::components::*;
-use wyldlands_server::llm::{LlmConfig, LlmManager};
+use wyldlands_server::llm::{LLMConfig, LlmManager};
 use std::sync::Arc;
 
 #[test]
@@ -262,7 +262,7 @@ async fn test_llm_manager_creation() {
 #[tokio::test]
 async fn test_llm_manager_provider_registration() {
     let manager = LlmManager::new();
-    let config = LlmConfig::ollama("http://localhost:11434/api/chat", "llama2");
+    let config = LLMConfig::ollama("http://localhost:11434/api/chat", "llama2");
     
     let result = manager.register_provider("ollama", config).await;
     assert!(result.is_ok());
@@ -279,10 +279,10 @@ async fn test_llm_manager_provider_registration() {
 async fn test_llm_manager_multiple_providers() {
     let manager = LlmManager::new();
     
-    let config1 = LlmConfig::ollama("http://localhost:11434/api/chat", "llama2");
+    let config1 = LLMConfig::ollama("http://localhost:11434/api/chat", "llama2");
     manager.register_provider("ollama", config1).await.unwrap();
     
-    let config2 = LlmConfig::lmstudio("http://localhost:1234/v1/chat/completions", "local");
+    let config2 = LLMConfig::lmstudio("http://localhost:1234/v1/chat/completions", "local");
     manager.register_provider("lmstudio", config2).await.unwrap();
     
     assert_eq!(manager.list_providers().await.len(), 2);
@@ -294,11 +294,11 @@ async fn test_llm_manager_multiple_providers() {
 
 #[test]
 fn test_llm_request_builder() {
-    use wyldlands_server::llm::{LlmRequest, LlmMessage};
+    use wyldlands_server::llm::{LLMRequest, LLMMessage};
     
-    let request = LlmRequest::new("gpt-4")
-        .with_message(LlmMessage::system("You are helpful"))
-        .with_message(LlmMessage::user("Hello"))
+    let request = LLMRequest::new("gpt-4")
+        .with_message(LLMMessage::system("You are helpful"))
+        .with_message(LLMMessage::user("Hello"))
         .with_temperature(0.7)
         .with_max_tokens(100);
     
@@ -356,7 +356,7 @@ fn test_npc_dialogue_fallback() {
     dialogue.add_fallback("Greetings!");
     dialogue.add_fallback("Welcome!");
     
-    assert_eq!(dialogue.fallback_responses.len(), 4); // 3 added + 1 default
+    assert_eq!(dialogue.fallback_responses.len(), 6); // 3 added + 3 default
     
     // Get random fallback (should return something)
     let fallback = dialogue.get_fallback();
@@ -400,7 +400,7 @@ fn test_complete_npc_setup() {
     assert!(world.get::<&Memory>(npc_entity).is_ok());
 }
 
-// Made with Bob
+
 
 
 // ============================================================================

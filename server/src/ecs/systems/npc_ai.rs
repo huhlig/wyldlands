@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,8 @@
 
 use crate::ecs::components::*;
 use crate::ecs::context::WorldContext;
-use crate::llm::{LlmManager, LlmMessage, LlmRequest};
+use crate::llm::{LlmManager, LLMMessage, LLMRequest};
+use hecs::Entity;
 use std::sync::Arc;
 
 /// NPC AI system for updating NPC behavior
@@ -38,7 +39,9 @@ impl NpcAiSystem {
 
         // Collect entities that need updating
         let mut entities_to_update = Vec::new();
-        for (entity, (npc, ai_controller)) in world.query::<(&Npc, &mut AIController)>().iter() {
+        for (entity, npc, ai_controller) in
+            world.query::<(Entity, &Npc, &mut AIController)>().iter()
+        {
             if npc.active {
                 ai_controller.update_timer(delta_time);
                 if ai_controller.should_update(delta_time) {
@@ -61,7 +64,7 @@ impl NpcAiSystem {
 
         // Get NPC components
         let has_goap = world.get::<&GoapPlanner>(entity).is_ok();
-        
+
         if has_goap {
             // Use GOAP planning
             self.update_with_goap(&mut world, entity).await;
@@ -98,7 +101,7 @@ impl NpcAiSystem {
 
         tracing::debug!("NPC {:?}: Executing action '{}'", entity, action_id);
 
-        // Execute the action (simplified - in a real implementation, 
+        // Execute the action (simplified - in a real implementation,
         // you'd have action handlers)
         if let Some(action) = planner.get_action(&action_id) {
             // Apply action effects to world state
@@ -165,10 +168,10 @@ impl NpcAiSystem {
                 npc_uuid: uuid::Uuid,
             },
         }
-        
+
         let data = {
             let world = context.entities().read().await;
-            
+
             // Get dialogue config
             let dialogue_config = match world.get::<&NpcDialogue>(npc_entity) {
                 Ok(c) => (*c).clone(),
@@ -177,14 +180,14 @@ impl NpcAiSystem {
 
             // Check if LLM is enabled
             if !dialogue_config.llm_enabled {
-                let fallback = dialogue_config
-                    .get_fallback()
-                    .unwrap_or("...")
-                    .to_string();
+                let fallback = dialogue_config.get_fallback().unwrap_or("...").to_string();
                 DialogueData::Fallback(fallback)
             } else {
                 // Get personality and conversation
-                let personality = world.get::<&Personality>(npc_entity).ok().map(|p| (*p).clone());
+                let personality = world
+                    .get::<&Personality>(npc_entity)
+                    .ok()
+                    .map(|p| (*p).clone());
                 let conversation = match world.get::<&NpcConversation>(npc_entity) {
                     Ok(c) => (*c).clone(),
                     Err(_) => NpcConversation::new(),
@@ -210,7 +213,7 @@ impl NpcAiSystem {
                 }
             }
         };
-        
+
         // Handle based on data type
         let (dialogue_config, personality, conversation, player_uuid, npc_uuid) = match data {
             DialogueData::Fallback(msg) => return Ok(msg),
@@ -220,11 +223,17 @@ impl NpcAiSystem {
                 conversation,
                 player_uuid,
                 npc_uuid,
-            } => (dialogue_config, personality, conversation, player_uuid, npc_uuid),
+            } => (
+                dialogue_config,
+                personality,
+                conversation,
+                player_uuid,
+                npc_uuid,
+            ),
         };
 
         // Build LLM request
-        let mut request = LlmRequest::new(&dialogue_config.llm_model)
+        let mut request = LLMRequest::new(&dialogue_config.llm_model)
             .with_temperature(dialogue_config.temperature)
             .with_max_tokens(dialogue_config.max_tokens);
 
@@ -236,21 +245,21 @@ impl NpcAiSystem {
                 p.background, p.speaking_style
             ));
         }
-        request = request.with_message(LlmMessage::system(system_prompt));
+        request = request.with_message(LLMMessage::system(system_prompt));
 
         // Add conversation history
         let history = conversation.get_recent(player_uuid, dialogue_config.history_limit);
         for msg in history {
             let role = if msg.speaker == npc_uuid {
-                LlmMessage::assistant(&msg.message)
+                LLMMessage::assistant(&msg.message)
             } else {
-                LlmMessage::user(&msg.message)
+                LLMMessage::user(&msg.message)
             };
             request = request.with_message(role);
         }
 
         // Add current message
-        request = request.with_message(LlmMessage::user(&message));
+        request = request.with_message(LLMMessage::user(&message));
 
         // Send to LLM
         let response = if let Some(provider) = &dialogue_config.llm_provider {
@@ -295,4 +304,4 @@ mod tests {
     }
 }
 
-// Made with Bob
+

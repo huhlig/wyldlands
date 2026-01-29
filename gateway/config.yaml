@@ -17,4 +17,4 @@ telnet:
 websocket:
   addr: ${WYLDLANDS_WEBSOCKET_ADDR:-0.0.0.0:8080}
 
-# Made with Bob
+

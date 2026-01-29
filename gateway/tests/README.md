@@ -120,4 +120,3 @@ Example GitHub Actions:
   run: cargo test -- --ignored --test-threads=1
 ```
 
-## Made with Bob

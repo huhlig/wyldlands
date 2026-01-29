@@ -233,4 +233,3 @@ INSERT INTO wyldlands.help_aliases (alias, keyword) VALUES
 
 COMMIT;
 
--- Made with Bob

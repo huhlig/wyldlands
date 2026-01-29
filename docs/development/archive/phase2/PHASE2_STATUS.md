@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Additionally, a comprehensive bidirectional RPC protocol has been implemented for gateway-server communication using tarpc, enabling seamless interaction between the connection layer and game logic layer.
+Additionally, a comprehensive bidirectional RPC protocol has been implemented for gateway-server communication using gRPC, enabling seamless interaction between the connection layer and game logic layer.
 Phase 2 has made excellent progress through Week 6 Day 12, with comprehensive implementation of session management, connection pooling, protocol handling, and reconnection systems. The gateway now has a robust infrastructure for managing active connections across multiple protocols (Telnet and WebSocket) with seamless reconnection capabilities. The reconnection system provides token-based authentication, command queue replay, and session state recovery.
 
 ---
@@ -151,7 +151,7 @@ Phase 2 has made excellent progress through Week 6 Day 12, with comprehensive im
 ### ✅ Gateway-Server RPC Protocol (Week 6 Days 11-12 Continued)
 
 #### Protocol Definition (`protocol/src/gateway.rs` - 509 lines)
-- **Bidirectional RPC using tarpc**: Full duplex communication
+- **Bidirectional RPC using gRPC**: Full duplex communication
 - **GatewayServer trait** (Gateway → Server):
   - `authenticate()` - User authentication
   - `create_character()` - Character creation
@@ -215,9 +215,9 @@ Phase 2 has made excellent progress through Week 6 Day 12, with comprehensive im
   - Future enhancements
 
 #### Dependencies Added
-- **Protocol crate**: serde_json for structured data
-- **Gateway crate**: wyldlands-protocol, tarpc
-- **Server crate**: wyldlands-protocol, tarpc, tokio, tracing
+- **Protocol crate**: Protocol Buffers for structured data
+- **Gateway crate**: wyldlands-common, tonic, prost
+- **Server crate**: wyldlands-common, tonic, prost, tokio, tracing
 
 - **Token generation on disconnect**: Logged for reconnection
 - **1-hour TTL**: Configurable token expiration
@@ -425,7 +425,7 @@ tokio-test = "0.4"
 - Thread-safe concurrent access
 
 ### 3. Gateway-Server RPC Protocol
-- Bidirectional tarpc-based communication
+- Bidirectional gRPC-based communication
 - Type-safe message passing (50+ data structures)
 - GatewayServer trait (gateway→server): authentication, character management, commands
 - ServerGateway trait (server→gateway): notifications, broadcasts, state updates

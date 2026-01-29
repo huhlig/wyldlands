@@ -121,4 +121,3 @@ cargo bench -- --baseline main
 - Check system load
 - Disable CPU frequency scaling
 
-## Made with Bob

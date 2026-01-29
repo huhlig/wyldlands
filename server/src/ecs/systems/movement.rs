@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 //! Movement system for entity movement
 
+use hecs::Entity;
 use crate::ecs::components::{Commandable, EntityId, Exits, Location};
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::{EcsEntity, GameWorld};
@@ -35,7 +36,7 @@ impl MovementSystem {
         let mut movements = Vec::new();
 
         // Collect movement commands
-        for (entity, commandable) in world.query_mut::<&mut Commandable>() {
+        for (entity, commandable) in world.query_mut::<(Entity, &mut Commandable)>() {
             if let Some(cmd) = commandable.command_queue.first() {
                 if cmd.command == "move" || Self::is_direction(&cmd.command) {
                     let direction = if cmd.command == "move" {

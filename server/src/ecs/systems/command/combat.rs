@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,12 @@
 
 //! Combat command handlers
 
-use crate::ecs::context::WorldContext;
-use crate::ecs::components::{Name, Combatant, BodyAttributes, Location, StatusEffects};
 use crate::ecs::EcsEntity;
-use crate::ecs::systems::CombatSystem;
+use crate::ecs::components::{BodyAttributes, Combatant, Location, Name, StatusEffects};
+use crate::ecs::context::WorldContext;
 use crate::ecs::events::EventBus;
+use crate::ecs::systems::CombatSystem;
+use hecs::Entity;
 use std::sync::Arc;
 
 /// Handle the attack command
@@ -34,20 +35,21 @@ pub async fn handle_attack(
     }
 
     let target_name = args[0].to_lowercase();
-    
+
     // Find target and get info in read lock
     let (target, target_display_name) = {
         let world = context.entities().read().await;
 
         // Find the attacker's location
-        let attacker_location = world.get::<&Location>(entity)
+        let attacker_location = world
+            .get::<&Location>(entity)
             .map_err(|_| "You don't have a location".to_string())?;
         let attacker_area = attacker_location.area_id;
         let attacker_room = attacker_location.room_id;
 
         // Find target in the same room
         let mut target_entity = None;
-        for (e, (name, location)) in world.query::<(&Name, &Location)>().iter() {
+        for (e, name, location) in world.query::<(Entity, &Name, &Location)>().iter() {
             if e != entity
                 && location.area_id == attacker_area
                 && location.room_id == attacker_room
@@ -58,7 +60,8 @@ pub async fn handle_attack(
             }
         }
 
-        let target = target_entity.ok_or_else(|| format!("You don't see '{}' here.", target_name))?;
+        let target =
+            target_entity.ok_or_else(|| format!("You don't see '{}' here.", target_name))?;
 
         // Check if target is a valid combatant
         if world.get::<&Combatant>(target).is_err() {
@@ -66,7 +69,8 @@ pub async fn handle_attack(
         }
 
         // Get target name for message
-        let target_display_name = world.get::<&Name>(target)
+        let target_display_name = world
+            .get::<&Name>(target)
             .map(|n| n.display.clone())
             .unwrap_or_else(|_| "someone".to_string());
 
@@ -79,19 +83,22 @@ pub async fn handle_attack(
     let event_bus = EventBus::new();
     let mut combat_system = CombatSystem::new(event_bus);
 
-    combat_system.start_combat_with_registry(&mut world, &registry, entity, target)
+    combat_system
+        .start_combat_with_registry(&mut world, &registry, entity, target)
         .map_err(|e| format!("Failed to start combat: {}", e))?;
 
     // Perform the first attack
     let result = combat_system.attack(&mut world, entity, target);
 
     if let Some(attack_result) = result {
-        let crit_msg = if attack_result.critical { " *CRITICAL HIT*" } else { "" };
+        let crit_msg = if attack_result.critical {
+            " *CRITICAL HIT*"
+        } else {
+            ""
+        };
         Ok(format!(
             "You attack {} for {} damage!{}",
-            target_display_name,
-            attack_result.damage,
-            crit_msg
+            target_display_name, attack_result.damage, crit_msg
         ))
     } else {
         Err("Attack failed.".to_string())
@@ -107,7 +114,8 @@ pub async fn handle_defend(
     let world = context.entities().read().await;
 
     // Check if in combat
-    let in_combat = world.get::<&Combatant>(entity)
+    let in_combat = world
+        .get::<&Combatant>(entity)
         .map(|c| c.in_combat)
         .unwrap_or(false);
 
@@ -125,7 +133,8 @@ pub async fn handle_defend(
     combat_system.defend(&mut world, entity)?;
 
     // Get defense bonus for message
-    let defense_bonus = world.get::<&Combatant>(entity)
+    let defense_bonus = world
+        .get::<&Combatant>(entity)
         .map(|c| c.defense_bonus)
         .unwrap_or(0);
 
@@ -144,7 +153,8 @@ pub async fn handle_flee(
     let world = context.entities().read().await;
 
     // Check if in combat
-    let in_combat = world.get::<&Combatant>(entity)
+    let in_combat = world
+        .get::<&Combatant>(entity)
         .map(|c| c.in_combat)
         .unwrap_or(false);
 
@@ -183,7 +193,8 @@ pub async fn handle_combat_status(
 ) -> Result<String, String> {
     let world = context.entities().read().await;
 
-    let combatant = world.get::<&Combatant>(entity)
+    let combatant = world
+        .get::<&Combatant>(entity)
         .map_err(|_| "You are not a combatant.".to_string())?;
 
     if !combatant.in_combat {
@@ -206,14 +217,16 @@ pub async fn handle_combat_status(
     if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
         status.push_str(&format!(
             "Health: {:.0}/{:.0}\n",
-            attrs.health_current,
-            attrs.health_maximum
+            attrs.health_current, attrs.health_maximum
         ));
     }
 
     // Show defending status
     if combatant.is_defending {
-        status.push_str(&format!("Defending: +{} defense\n", combatant.defense_bonus));
+        status.push_str(&format!(
+            "Defending: +{} defense\n",
+            combatant.defense_bonus
+        ));
     }
 
     // Show status effects
@@ -247,4 +260,4 @@ mod tests {
     }
 }
 
-// Made with Bob
+

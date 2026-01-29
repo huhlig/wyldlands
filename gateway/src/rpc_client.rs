@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,11 +20,16 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tarpc::client;
-use tarpc::tokio_serde::formats::Bincode;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
-use wyldlands_common::gateway::GatewayServerClient;
+use tonic::transport::Channel;
+use wyldlands_common::proto::{
+    AuthenticateGatewayRequest, GatewayHeartbeatRequest, SendCommandRequest,
+    gateway_server_client::GatewayServerClient,
+};
+
+// Type alias for the client with Channel transport
+type GrpcClient = GatewayServerClient<Channel>;
 
 /// RPC client state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +82,7 @@ pub struct RpcClientManager {
     auth_key: String,
 
     /// Current client (if connected)
-    client: Arc<RwLock<Option<GatewayServerClient>>>,
+    client: Arc<RwLock<Option<GrpcClient>>>,
 
     /// Connection state
     state: Arc<RwLock<ClientState>>,
@@ -155,7 +160,7 @@ impl RpcClientManager {
     }
 
     /// Get a client handle (returns None if not connected)
-    pub async fn client(&self) -> Option<GatewayServerClient> {
+    pub async fn client(&self) -> Option<GrpcClient> {
         self.client.read().await.clone()
     }
 
@@ -234,29 +239,31 @@ impl RpcClientManager {
                 queued_cmd.command
             );
 
-            if let Some(client) = self.client().await {
-                match client
-                    .send_command(
-                        tarpc::context::current(),
-                        queued_cmd.session_id.clone(),
-                        queued_cmd.command.clone(),
-                    )
-                    .await
-                {
-                    Ok(Ok(_)) => {
-                        let mut processed = self.processed_count.write().await;
-                        *processed += 1;
-                        tracing::debug!(
-                            "Successfully processed queued command for session {}",
-                            queued_cmd.session_id
-                        );
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            "Queued command failed for session {}: {:?}",
-                            queued_cmd.session_id,
-                            e
-                        );
+            if let Some(mut client) = self.client().await {
+                let request = SendCommandRequest {
+                    session_id: queued_cmd.session_id.clone(),
+                    command: queued_cmd.command.clone(),
+                };
+
+                match client.send_command(request).await {
+                    Ok(response) => {
+                        let resp = response.into_inner();
+                        if resp.success {
+                            let mut processed = self.processed_count.write().await;
+                            *processed += 1;
+                            tracing::debug!(
+                                "Successfully processed queued command for session {}",
+                                queued_cmd.session_id
+                            );
+                        } else {
+                            let error_msg =
+                                resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                            tracing::warn!(
+                                "Queued command failed for session {}: {}",
+                                queued_cmd.session_id,
+                                error_msg
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::error!(
@@ -286,7 +293,7 @@ impl RpcClientManager {
     }
 
     /// Attempt to connect to the server
-    async fn connect(&self) -> Result<GatewayServerClient, String> {
+    async fn connect(&self) -> Result<GrpcClient, String> {
         tracing::info!("Attempting to connect to server at {}", self.server_addr);
 
         // Update state
@@ -295,64 +302,67 @@ impl RpcClientManager {
             *state = ClientState::Connecting;
         }
 
-        // Attempt connection
-        match tokio::net::TcpStream::connect(self.server_addr.as_str()).await {
-            Ok(stream) => {
-                tracing::info!("TCP connection established to {}", self.server_addr);
+        // Attempt gRPC connection
+        let endpoint = format!("http://{}", self.server_addr);
+        match Channel::from_shared(endpoint.clone()) {
+            Ok(endpoint) => {
+                match endpoint.connect().await {
+                    Ok(channel) => {
+                        tracing::info!("gRPC connection established to {}", self.server_addr);
 
-                // Set up transport
-                let transport = tarpc::serde_transport::new(
-                    tokio_util::codec::LengthDelimitedCodec::builder()
-                        .max_frame_length(16 * 1024 * 1024)
-                        .new_framed(stream),
-                    Bincode::default(),
-                );
+                        // Create client
+                        let mut client = GatewayServerClient::new(channel);
 
-                // Create client
-                let client = GatewayServerClient::new(client::Config::default(), transport).spawn();
+                        // Authenticate the gateway connection
+                        tracing::info!("Authenticating gateway connection");
+                        let auth_request = AuthenticateGatewayRequest {
+                            auth_key: self.auth_key.clone(),
+                        };
 
-                // Authenticate the gateway connection
-                tracing::info!("Authenticating gateway connection");
-                match client
-                    .authenticate_gateway(tarpc::context::current(), self.auth_key.clone())
-                    .await
-                {
-                    Ok(Ok(())) => {
-                        tracing::info!("Gateway authentication successful");
-                    }
-                    Ok(Err(e)) => {
-                        tracing::error!("Gateway authentication failed: {}", e);
-                        let mut state = self.state.write().await;
-                        *state = ClientState::Failed;
-                        return Err(format!("Authentication failed: {}", e));
+                        match client.authenticate_gateway(auth_request).await {
+                            Ok(response) => {
+                                let resp = response.into_inner();
+                                if resp.success {
+                                    tracing::info!("Gateway authentication successful");
+                                } else {
+                                    let error_msg =
+                                        resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                                    tracing::error!("Gateway authentication failed: {}", error_msg);
+                                    let mut state = self.state.write().await;
+                                    *state = ClientState::Failed;
+                                    return Err(format!("Authentication failed: {}", error_msg));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Gateway authentication RPC error: {}", e);
+                                let mut state = self.state.write().await;
+                                *state = ClientState::Failed;
+                                return Err(format!("Authentication RPC error: {}", e));
+                            }
+                        }
+
+                        // Update state
+                        {
+                            let mut state = self.state.write().await;
+                            *state = ClientState::Connected;
+                        }
+
+                        tracing::info!("gRPC client connected and authenticated successfully");
+                        Ok(client)
                     }
                     Err(e) => {
-                        tracing::error!("Gateway authentication RPC error: {}", e);
+                        tracing::error!("Failed to connect to server: {}", e);
                         let mut state = self.state.write().await;
                         *state = ClientState::Failed;
-                        return Err(format!("Authentication RPC error: {}", e));
+                        Err(format!("Connection failed: {}", e))
                     }
                 }
-
-                // Update state
-                {
-                    let mut state = self.state.write().await;
-                    *state = ClientState::Connected;
-                }
-
-                tracing::info!("RPC client connected and authenticated successfully");
-                Ok(client)
             }
             Err(e) => {
-                tracing::error!("Failed to connect to server: {}", e);
-
-                // Update state
-                {
-                    let mut state = self.state.write().await;
-                    *state = ClientState::Failed;
-                }
-
-                Err(format!("Connection failed: {}", e))
+                tracing::error!("Invalid endpoint {}: {}", endpoint, e);
+                let mut state = self.state.write().await;
+                *state = ClientState::Failed;
+                Err(format!("Invalid endpoint: {}", e))
             }
         }
     }
@@ -447,22 +457,28 @@ impl RpcClientManager {
     ) -> Result<(), String> {
         if self.is_connected().await {
             // Try to send immediately
-            if let Some(client) = self.client().await {
-                match client
-                    .send_command(
-                        tarpc::context::current(),
-                        session_id.clone(),
-                        command.clone(),
-                    )
-                    .await
-                {
-                    Ok(Ok(_)) => {
-                        tracing::debug!("Command sent successfully for session {}", session_id);
-                        return Ok(());
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("Command failed for session {}: {:?}", session_id, e);
-                        return Err(format!("Command failed: {:?}", e));
+            if let Some(mut client) = self.client().await {
+                let request = SendCommandRequest {
+                    session_id: session_id.clone(),
+                    command: command.clone(),
+                };
+
+                match client.send_command(request).await {
+                    Ok(response) => {
+                        let resp = response.into_inner();
+                        if resp.success {
+                            tracing::debug!("Command sent successfully for session {}", session_id);
+                            return Ok(());
+                        } else {
+                            let error_msg =
+                                resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                            tracing::warn!(
+                                "Command failed for session {}: {}",
+                                session_id,
+                                error_msg
+                            );
+                            return Err(format!("Command failed: {}", error_msg));
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -489,9 +505,7 @@ impl RpcClientManager {
     /// Execute a command with automatic retry on failure
     pub async fn execute_with_retry<F, T, E>(&self, mut f: F) -> Result<T, String>
     where
-        F: FnMut(
-            &GatewayServerClient,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
+        F: FnMut(&GrpcClient) -> std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
         E: std::fmt::Display,
     {
         const MAX_RETRIES: usize = 3;
@@ -551,21 +565,30 @@ impl RpcClientManager {
 
             // Only send heartbeat if connected
             if self.is_connected().await {
-                if let Some(client) = self.client().await {
+                if let Some(mut client) = self.client().await {
                     tracing::debug!("Sending gateway heartbeat from {}", gateway_id);
 
-                    match client
-                        .gateway_heartbeat(tarpc::context::current(), gateway_id.clone())
-                        .await
-                    {
-                        Ok(Ok(())) => {
-                            tracing::debug!("Gateway heartbeat successful from {}", gateway_id);
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!("Gateway heartbeat failed from {}: {}", gateway_id, e);
-                            // Mark as disconnected to trigger reconnection
-                            let mut state = self.state.write().await;
-                            *state = ClientState::Disconnected;
+                    let request = GatewayHeartbeatRequest {
+                        gateway_id: gateway_id.clone(),
+                    };
+
+                    match client.gateway_heartbeat(request).await {
+                        Ok(response) => {
+                            let resp = response.into_inner();
+                            if resp.success {
+                                tracing::debug!("Gateway heartbeat successful from {}", gateway_id);
+                            } else {
+                                let error_msg =
+                                    resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                                tracing::warn!(
+                                    "Gateway heartbeat failed from {}: {}",
+                                    gateway_id,
+                                    error_msg
+                                );
+                                // Mark as disconnected to trigger reconnection
+                                let mut state = self.state.write().await;
+                                *state = ClientState::Disconnected;
+                            }
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -690,5 +713,3 @@ mod tests {
         assert_eq!(stats.queued_count, 1);
     }
 }
-
-

@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -143,17 +143,17 @@ impl Combatant {
             defense_bonus: 0,
         }
     }
-    
+
     /// Check if the combatant can attack
     pub fn can_attack(&self) -> bool {
         self.time_since_action >= self.action_cooldown
     }
-    
+
     /// Update attack timer
     pub fn update_timer(&mut self, delta_time: f32) {
         self.time_since_action += delta_time;
     }
-    
+
     /// Reset attack timer
     pub fn reset_timer(&mut self) {
         self.time_since_action = 0.0;
@@ -214,7 +214,7 @@ impl EquipSlot {
             EquipSlot::Wings => "Wings",
         }
     }
-    
+
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "Head" => Some(EquipSlot::Head),
@@ -264,7 +264,7 @@ impl Equipment {
     pub fn get(&self, slot: EquipSlot) -> Option<EntityId> {
         self.slots.get(&slot).copied()
     }
-    
+
     /// Check if a slot is occupied
     pub fn is_equipped(&self, slot: EquipSlot) -> bool {
         self.slots.contains_key(&slot)
@@ -314,7 +314,7 @@ impl DamageType {
             DamageType::Psychic => "Psychic",
         }
     }
-    
+
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "Blunt" => Some(DamageType::Blunt),
@@ -331,7 +331,7 @@ impl DamageType {
 
 /// Weapon properties
 /// Maps to: entity_weapon table
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Weapon {
     pub damage_min: i32,
     pub damage_max: i32,
@@ -377,7 +377,7 @@ impl MaterialKind {
             MaterialKind::Mana => "Mana",
         }
     }
-    
+
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "Cloth" => Some(MaterialKind::Cloth),
@@ -407,62 +407,50 @@ impl Material {
 /// Armor defense component
 /// Maps to: entity_armor_defense table
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArmorDefense {
+pub struct Armor {
     pub defenses: HashMap<DamageType, i32>,
+    pub armor_type: MaterialKind,
 }
 
-impl ArmorDefense {
+impl Armor {
     pub fn new() -> Self {
         Self {
             defenses: HashMap::new(),
+            armor_type: MaterialKind::Cloth,
         }
     }
-    
+
     pub fn set_defense(&mut self, damage_kind: DamageType, defense: i32) {
         self.defenses.insert(damage_kind, defense);
     }
-    
+
     pub fn get_defense(&self, damage_kind: DamageType) -> i32 {
         self.defenses.get(&damage_kind).copied().unwrap_or(0)
     }
 }
 
-impl Default for ArmorDefense {
+impl Default for Armor {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// Legacy compatibility types (deprecated)
-#[deprecated(note = "Use DamageType instead")]
-pub type WeaponType = DamageType;
-
-#[deprecated(note = "Use MaterialKind instead")]
-pub type ArmorType = MaterialKind;
-
-#[deprecated(note = "Use ArmorDefense instead")]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Armor {
-    pub defense: i32,
-    pub armor_type: MaterialKind,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_combatant_attack_cooldown() {
         let mut combatant = Combatant::new();
         assert!(combatant.can_attack());
-        
+
         combatant.reset_timer();
         assert!(!combatant.can_attack());
-        
+
         combatant.update_timer(1.0);
         assert!(combatant.can_attack());
     }
-    
+
     #[test]
     fn test_equipment() {
         let mut equipment = Equipment::new();
@@ -475,11 +463,11 @@ mod tests {
 
         equipment.equip(EquipSlot::OffHand, shield);
         assert_eq!(equipment.slots.len(), 2);
-        
+
         let old_sword = equipment.equip(EquipSlot::MainHand, shield);
         assert_eq!(old_sword, Some(sword));
     }
-    
+
     #[test]
     fn test_weapon() {
         let weapon = Weapon::new(5, 10, DamageType::Slashing);
@@ -487,16 +475,14 @@ mod tests {
         assert_eq!(weapon.damage_max, 10);
         assert_eq!(weapon.damage_type, DamageType::Slashing);
     }
-    
+
     #[test]
     fn test_armor_defense() {
-        let mut armor = ArmorDefense::new();
+        let mut armor = Armor::new();
         armor.set_defense(DamageType::Slashing, 10);
         armor.set_defense(DamageType::Blunt, 5);
-        
+
         assert_eq!(armor.get_defense(DamageType::Slashing), 10);
         assert_eq!(armor.get_defense(DamageType::Fire), 0);
     }
 }
-
-

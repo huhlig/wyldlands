@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
 
 //! NPC editor commands
 
+use crate::ecs::EcsEntity;
 use crate::ecs::components::*;
 use crate::ecs::context::WorldContext;
 use crate::ecs::systems::CommandResult;
-use crate::ecs::EcsEntity;
+use hecs::Entity;
 use std::sync::Arc;
-
 // ============================================================================
 // NPC Commands
 // ============================================================================
@@ -34,7 +34,11 @@ pub async fn npc_create_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("NPC Create Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "NPC Create Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.is_empty() {
         return CommandResult::Failure("Usage: npc create <name> [template_id]".to_string());
@@ -55,17 +59,14 @@ pub async fn npc_create_command(
     // Get creator's location
     let location = {
         let world = context.entities().read().await;
-        world
-            .get::<&Location>(entity)
-            .ok()
-            .map(|l| (*l).clone())
+        world.get::<&Location>(entity).ok().map(|l| (*l).clone())
     };
 
     // Create the NPC entity
     let npc_uuid = uuid::Uuid::new_v4();
     let npc_entity = {
         let mut world = context.entities().write().await;
-        
+
         let mut builder = hecs::EntityBuilder::new();
         builder.add(EntityUuid(npc_uuid));
         builder.add(Name::new(&npc_name));
@@ -73,33 +74,33 @@ pub async fn npc_create_command(
             format!("A new NPC named {}", npc_name),
             "This is a newly created NPC. Use 'npc edit' to configure it.".to_string(),
         ));
-        
+
         // Add NPC marker
         if let Some(ref template) = template_id {
             builder.add(Npc::from_template(template));
         } else {
             builder.add(Npc::new());
         }
-        
+
         // Add AI components
         builder.add(AIController::new(BehaviorType::Passive));
         builder.add(Personality::new());
         builder.add(Memory::new());
-        
+
         // Add GOAP planner
         builder.add(GoapPlanner::new());
-        
+
         // Add dialogue
         builder.add(NpcDialogue::new("gpt-4"));
         builder.add(NpcConversation::new());
-        
+
         // Add location if creator has one
         if let Some(loc) = location {
             builder.add(loc);
         }
-        
+
         builder.add(Persistent);
-        
+
         world.spawn(builder.build())
     };
 
@@ -151,8 +152,8 @@ pub async fn npc_list_command(
     let world = context.entities().read().await;
     let mut npcs = Vec::new();
 
-    for (e, (uuid, name, npc, ai)) in world
-        .query::<(&EntityUuid, &Name, &Npc, &AIController)>()
+    for (e, uuid, name, npc, ai) in world
+        .query::<(Entity, &EntityUuid, &Name, &Npc, &AIController)>()
         .iter()
     {
         if let Some(ref f) = filter {
@@ -265,7 +266,7 @@ pub async fn npc_edit_command(
                 None => {
                     return CommandResult::Failure(format!(
                         "Invalid behavior type. Valid types: Passive, Wandering, Aggressive, Defensive, Friendly, Merchant, Quest, Custom\r\n"
-                    ))
+                    ));
                 }
             };
 
@@ -278,8 +279,9 @@ pub async fn npc_edit_command(
             }
         }
         "active" => {
-            let active = value.to_lowercase() == "true" || value == "1" || value.to_lowercase() == "yes";
-            
+            let active =
+                value.to_lowercase() == "true" || value == "1" || value.to_lowercase() == "yes";
+
             if let Ok(mut npc) = world.get::<&mut Npc>(npc_entity) {
                 npc.active = active;
                 context.mark_entity_dirty(npc_entity).await;
@@ -300,7 +302,11 @@ pub async fn npc_dialogue_command(
     _cmd: String,
     args: Vec<String>,
 ) -> CommandResult {
-    tracing::debug!("NPC Dialogue Command from {}: {}", entity.id(), args.join(" "));
+    tracing::debug!(
+        "NPC Dialogue Command from {}: {}",
+        entity.id(),
+        args.join(" ")
+    );
 
     if args.len() < 3 {
         return CommandResult::Failure(
@@ -336,7 +342,10 @@ pub async fn npc_dialogue_command(
             let enabled = value.to_lowercase() == "true" || value == "1";
             dialogue.llm_enabled = enabled;
             context.mark_entity_dirty(npc_entity).await;
-            CommandResult::Success(format!("LLM dialogue {}\r\n", if enabled { "enabled" } else { "disabled" }))
+            CommandResult::Success(format!(
+                "LLM dialogue {}\r\n",
+                if enabled { "enabled" } else { "disabled" }
+            ))
         }
         "model" => {
             dialogue.llm_model = value.clone();
@@ -348,26 +357,24 @@ pub async fn npc_dialogue_command(
             context.mark_entity_dirty(npc_entity).await;
             CommandResult::Success("System prompt updated\r\n".to_string())
         }
-        "temperature" => {
-            match value.parse::<f32>() {
-                Ok(temp) => {
-                    dialogue.temperature = temp.clamp(0.0, 2.0);
-                    context.mark_entity_dirty(npc_entity).await;
-                    CommandResult::Success(format!("Temperature set to: {}\r\n", dialogue.temperature))
-                }
-                Err(_) => CommandResult::Failure("Invalid temperature value (must be 0.0-2.0)\r\n".to_string()),
+        "temperature" => match value.parse::<f32>() {
+            Ok(temp) => {
+                dialogue.temperature = temp.clamp(0.0, 2.0);
+                context.mark_entity_dirty(npc_entity).await;
+                CommandResult::Success(format!("Temperature set to: {}\r\n", dialogue.temperature))
             }
-        }
-        "max_tokens" => {
-            match value.parse::<u32>() {
-                Ok(tokens) => {
-                    dialogue.max_tokens = tokens;
-                    context.mark_entity_dirty(npc_entity).await;
-                    CommandResult::Success(format!("Max tokens set to: {}\r\n", tokens))
-                }
-                Err(_) => CommandResult::Failure("Invalid max_tokens value\r\n".to_string()),
+            Err(_) => CommandResult::Failure(
+                "Invalid temperature value (must be 0.0-2.0)\r\n".to_string(),
+            ),
+        },
+        "max_tokens" => match value.parse::<u32>() {
+            Ok(tokens) => {
+                dialogue.max_tokens = tokens;
+                context.mark_entity_dirty(npc_entity).await;
+                CommandResult::Success(format!("Max tokens set to: {}\r\n", tokens))
             }
-        }
+            Err(_) => CommandResult::Failure("Invalid max_tokens value\r\n".to_string()),
+        },
         _ => CommandResult::Failure(format!("Unknown property: {}\r\n", property)),
     }
 }
@@ -420,7 +427,9 @@ pub async fn npc_goap_command(
     match subcommand.as_str() {
         "addgoal" => {
             if args.len() < 4 {
-                return CommandResult::Failure("Usage: npc goap <uuid> addgoal <name> <priority>\r\n".to_string());
+                return CommandResult::Failure(
+                    "Usage: npc goap <uuid> addgoal <name> <priority>\r\n".to_string(),
+                );
             }
             let name = &args[2];
             let priority = match args[3].parse::<i32>() {
@@ -431,11 +440,16 @@ pub async fn npc_goap_command(
             let goal = GoapGoal::new(name, name, priority);
             planner.add_goal(goal);
             context.mark_entity_dirty(npc_entity).await;
-            CommandResult::Success(format!("Goal '{}' added with priority {}\r\n", name, priority))
+            CommandResult::Success(format!(
+                "Goal '{}' added with priority {}\r\n",
+                name, priority
+            ))
         }
         "addaction" => {
             if args.len() < 4 {
-                return CommandResult::Failure("Usage: npc goap <uuid> addaction <name> <cost>\r\n".to_string());
+                return CommandResult::Failure(
+                    "Usage: npc goap <uuid> addaction <name> <cost>\r\n".to_string(),
+                );
             }
             let name = &args[2];
             let cost = match args[3].parse::<f32>() {
@@ -450,7 +464,9 @@ pub async fn npc_goap_command(
         }
         "setstate" => {
             if args.len() < 4 {
-                return CommandResult::Failure("Usage: npc goap <uuid> setstate <key> <value>\r\n".to_string());
+                return CommandResult::Failure(
+                    "Usage: npc goap <uuid> setstate <key> <value>\r\n".to_string(),
+                );
             }
             let key = &args[2];
             let value = args[3].to_lowercase() == "true" || args[3] == "1";
@@ -463,7 +479,10 @@ pub async fn npc_goap_command(
             let mut output = format!("\r\nGOAP Configuration:\r\n{}\r\n\r\n", "=".repeat(80));
             output.push_str(&format!("Goals: {}\r\n", planner.goals.len()));
             for goal in &planner.goals {
-                output.push_str(&format!("  - {} (priority: {})\r\n", goal.name, goal.priority));
+                output.push_str(&format!(
+                    "  - {} (priority: {})\r\n",
+                    goal.name, goal.priority
+                ));
             }
             output.push_str(&format!("\r\nActions: {}\r\n", planner.actions.len()));
             for action in &planner.actions {
@@ -476,4 +495,4 @@ pub async fn npc_goap_command(
     }
 }
 
-// Made with Bob
+

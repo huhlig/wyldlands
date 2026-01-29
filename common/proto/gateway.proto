@@ -1,0 +1,307 @@
+syntax = "proto3";
+
+package wyldlands.gateway;
+
+// Gateway-to-Server service
+service GatewayServer {
+  // Authenticate gateway connection
+  rpc AuthenticateGateway(AuthenticateGatewayRequest) returns (AuthenticateGatewayResponse);
+  
+  // Authenticate user session
+  rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
+  
+  // Select character for play
+  rpc SelectCharacter(SelectCharacterRequest) returns (SelectCharacterResponse);
+  
+  // Send unified command (handles all session states: character creation, gameplay, editing, etc.)
+  // The server uses a state machine to route commands based on current session state
+  rpc SendCommand(SendCommandRequest) returns (SendCommandResponse);
+  
+  // Session lifecycle
+  rpc SessionDisconnected(SessionDisconnectedRequest) returns (Empty);
+  rpc SessionReconnected(SessionReconnectedRequest) returns (SessionReconnectedResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (Empty);
+  
+  // Gateway-level heartbeat (for gateway-to-server connection health)
+  rpc GatewayHeartbeat(GatewayHeartbeatRequest) returns (GatewayHeartbeatResponse);
+}
+
+// Server-to-Gateway service (for callbacks)
+service ServerGateway {
+  // Send output to client
+  rpc SendOutput(SendOutputRequest) returns (Empty);
+  
+  // Send prompt to client
+  rpc SendPrompt(SendPromptRequest) returns (Empty);
+  
+  // Notify of entity state change
+  rpc EntityStateChanged(EntityStateChangedRequest) returns (Empty);
+  
+  // Request session disconnect
+  rpc DisconnectSession(DisconnectSessionRequest) returns (Empty);
+}
+
+// ============================================================================
+// Authentication Messages
+// ============================================================================
+
+message AuthenticateGatewayRequest {
+  string auth_key = 1;
+}
+
+message AuthenticateGatewayResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message AuthenticateRequest {
+  string session_id = 1;
+  string username = 2;
+  string password = 3;
+}
+
+message AuthenticateResponse {
+  bool success = 1;
+  optional string account_id = 2;
+  repeated CharacterSummary characters = 3;
+  optional string error = 4;
+}
+
+message CharacterSummary {
+  string entity_id = 1;
+  string name = 2;
+  int32 level = 3;
+  string location = 4;
+}
+
+// ============================================================================
+// Character Selection Messages
+// ============================================================================
+
+message SelectCharacterRequest {
+  string session_id = 1;
+  string entity_id = 2;
+}
+
+message SelectCharacterResponse {
+  bool success = 1;
+  optional CharacterInfo character = 2;
+  optional string error = 3;
+}
+
+message CharacterInfo {
+  string entity_id = 1;
+  string name = 2;
+  int32 level = 3;
+  string location_name = 4;
+  string initial_look = 5;
+}
+
+// ============================================================================
+// Unified Command Messages (State Machine Based)
+// ============================================================================
+
+message SendCommandRequest {
+  string session_id = 1;
+  string command = 2;
+}
+
+message SendCommandResponse {
+  bool success = 1;
+  repeated GameOutput output = 2;
+  optional string error = 3;
+  
+  // Session state information
+  SessionState session_state = 4;
+  
+  // Character creation state (only present during character creation)
+  optional CharacterBuilderState character_builder_state = 5;
+}
+
+// Session states for the state machine
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  UNAUTHENTICATED = 1;           // Not logged in
+  AUTHENTICATED = 2;             // Logged in, selecting character
+  CHARACTER_CREATION = 3;        // Creating a new character
+  PLAYING = 4;                   // Active gameplay with selected character
+  EDITING = 5;                   // Editing existing character (future)
+  DISCONNECTED = 6;              // Session ended
+}
+
+// Character builder state (sent during character creation)
+message CharacterBuilderState {
+  string name = 1;
+  map<string, int32> attributes = 2;
+  repeated string talents = 3;
+  map<string, int32> skills = 4;
+  int32 attribute_talent_points = 5;
+  int32 skill_points = 6;
+  int32 max_attribute_talent_points = 7;
+  int32 max_skill_points = 8;
+  optional string starting_location_id = 9;
+  repeated string validation_errors = 10;
+  bool is_valid = 11;
+}
+
+// Game output types
+message GameOutput {
+  oneof output_type {
+    TextOutput text = 1;
+    FormattedTextOutput formatted_text = 2;
+    StructuredOutput structured = 3;
+    RoomDescriptionOutput room_description = 4;
+    CombatMessageOutput combat = 5;
+    SystemMessageOutput system = 6;
+  }
+}
+
+message TextOutput {
+  string content = 1;
+}
+
+message FormattedTextOutput {
+  string content = 1;
+  repeated FormatTag tags = 2;
+}
+
+message FormatTag {
+  int32 start = 1;
+  int32 end = 2;
+  string format_type = 3;
+  map<string, string> attributes = 4;
+}
+
+message StructuredOutput {
+  string output_type = 1;
+  map<string, string> data = 2;
+}
+
+message RoomDescriptionOutput {
+  string name = 1;
+  string description = 2;
+  repeated string exits = 3;
+  repeated string items = 4;
+  repeated string characters = 5;
+}
+
+message CombatMessageOutput {
+  string message = 1;
+  string combat_type = 2;
+  map<string, string> participants = 3;
+}
+
+message SystemMessageOutput {
+  string message = 1;
+  string message_type = 2;
+}
+
+// ============================================================================
+// Session Lifecycle Messages
+// ============================================================================
+
+message SessionDisconnectedRequest {
+  string session_id = 1;
+}
+
+message SessionReconnectedRequest {
+  string session_id = 1;
+  string old_session_id = 2;
+}
+
+message SessionReconnectedResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message HeartbeatRequest {
+  string session_id = 1;
+}
+
+message GatewayHeartbeatRequest {
+  string gateway_id = 1;
+}
+
+message GatewayHeartbeatResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+// ============================================================================
+// Server-to-Gateway Callback Messages
+// ============================================================================
+
+message SendOutputRequest {
+  string session_id = 1;
+  repeated GameOutput output = 2;
+}
+
+message SendPromptRequest {
+  string session_id = 1;
+  string prompt = 2;
+}
+
+message EntityStateChangedRequest {
+  string session_id = 1;
+  string entity_id = 2;
+  map<string, string> changes = 3;
+}
+
+message DisconnectSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum AttributeType {
+  ATTRIBUTE_TYPE_UNSPECIFIED = 0;
+  BODY_OFFENCE = 1;
+  BODY_FINESSE = 2;
+  BODY_DEFENCE = 3;
+  MIND_OFFENCE = 4;
+  MIND_FINESSE = 5;
+  MIND_DEFENCE = 6;
+  SOUL_OFFENCE = 7;
+  SOUL_FINESSE = 8;
+  SOUL_DEFENCE = 9;
+}
+
+enum Talent {
+  TALENT_UNSPECIFIED = 0;
+  WEAPON_MASTER = 1;
+  SHIELD_EXPERT = 2;
+  DUAL_WIELDER = 3;
+  BERSERKER = 4;
+  TACTICIAN = 5;
+  SPELLWEAVER = 6;
+  ELEMENTAL_AFFINITY = 7;
+  ARCANE_SCHOLAR = 8;
+  RITUALIST = 9;
+  CHANNELER = 10;
+  ASTRAL_PROJECTION = 11;
+  MASTER_CRAFTSMAN = 12;
+  ARTIFICER = 13;
+  ALCHEMIST = 14;
+  ENCHANTER = 15;
+  DIPLOMAT = 16;
+  MERCHANT = 17;
+  LEADER = 18;
+  PERFORMER = 19;
+  TRACKER = 20;
+  FORAGER = 21;
+  BEAST_MASTER = 22;
+  SURVIVALIST = 23;
+  PRODIGY = 24;
+  LUCKY = 25;
+  FAST_LEARNER = 26;
+  RESILIENT = 27;
+}
+
+// ============================================================================
+// Common Messages
+// ============================================================================
+
+message Empty {}

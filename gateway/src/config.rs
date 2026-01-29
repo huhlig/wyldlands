@@ -1,5 +1,5 @@
 //
-// Copyright 2025 Hans W. Uhlig. All Rights Reserved.
+// Copyright 2025-2026 Hans W. Uhlig. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,6 +77,7 @@ pub struct Configuration {
 
     pub telnet: Option<TelnetConfig>,
     pub websocket: Option<WebsocketConfig>,
+    pub grpc: Option<GrpcConfig>,
 }
 
 impl Configuration {
@@ -297,6 +298,49 @@ impl Default for WebsocketBinding {
 }
 
 impl std::fmt::Display for WebsocketBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct GrpcConfig {
+    pub addr: EnvField<GrpcBinding>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GrpcBinding(SocketAddr);
+
+impl GrpcBinding {
+    pub fn to_addr(&self) -> SocketAddr {
+        self.0
+    }
+    pub fn to_ip(&self) -> IpAddr {
+        self.0.ip()
+    }
+    pub fn to_port(&self) -> u16 {
+        self.0.port()
+    }
+}
+
+impl FromStr for GrpcBinding {
+    type Err = AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(SocketAddr::from_str(s)?))
+    }
+}
+
+impl Default for GrpcBinding {
+    fn default() -> Self {
+        Self(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            5001,
+        )))
+    }
+}
+
+impl std::fmt::Display for GrpcBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
