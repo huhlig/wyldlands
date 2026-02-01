@@ -307,7 +307,7 @@ impl SessionStore {
     pub async fn save(&self, session: &Session) -> Result<(), sqlx::Error> {
         sqlx::query!(
             r#"
-            INSERT INTO sessions (id, entity_id, created_at, last_activity, state, protocol, client_addr, metadata)
+            INSERT INTO sessions (id, entity_id, created_at, last_activity, state, server, client_addr, metadata)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (id) DO UPDATE SET
                 entity_id = EXCLUDED.entity_id,
@@ -334,7 +334,7 @@ impl SessionStore {
     pub async fn load(&self, id: Uuid) -> Result<Option<Session>, sqlx::Error> {
         let row = sqlx::query!(
             r#"
-            SELECT id, entity_id, created_at, last_activity, state, protocol, client_addr, metadata
+            SELECT id, entity_id, created_at, last_activity, state, server, client_addr, metadata
             FROM sessions
             WHERE id = $1
             "#,

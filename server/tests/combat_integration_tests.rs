@@ -16,11 +16,11 @@
 
 //! Combat system integration tests
 
+use wyldlands_server::ecs::GameWorld;
 use wyldlands_server::ecs::components::*;
 use wyldlands_server::ecs::events::EventBus;
 use wyldlands_server::ecs::registry::EntityRegistry;
 use wyldlands_server::ecs::systems::CombatSystem;
-use wyldlands_server::ecs::GameWorld;
 
 #[test]
 fn test_combat_system_creation() {
@@ -38,14 +38,14 @@ fn test_start_combat() {
         Name::new("Attacker"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     let defender = world.spawn((
         Name::new("Defender"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     system.start_combat(&mut world, attacker, defender);
@@ -68,16 +68,19 @@ fn test_attack_deals_damage() {
     let attacker = world.spawn((
         Name::new("Attacker"),
         Combatant::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     let defender = world.spawn((
         Name::new("Defender"),
         Combatant::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
-    let initial_health = world.get::<&BodyAttributes>(defender).unwrap().health_current;
+    let initial_health = world
+        .get::<&AttributeScores>(defender)
+        .unwrap()
+        .health_current;
 
     let result = system.attack(&mut world, attacker, defender);
     assert!(result.is_some());
@@ -86,7 +89,7 @@ fn test_attack_deals_damage() {
     assert!(result.hit);
     assert!(result.damage > 0);
 
-    let health = world.get::<&BodyAttributes>(defender).unwrap();
+    let health = world.get::<&AttributeScores>(defender).unwrap();
     assert!(health.health_current < initial_health);
 }
 
@@ -99,7 +102,7 @@ fn test_defend_increases_defense() {
     let entity = world.spawn((
         Name::new("Defender"),
         Combatant::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     // Start combat first
@@ -107,7 +110,7 @@ fn test_defend_increases_defense() {
         Name::new("Enemy"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     system.start_combat(&mut world, entity, enemy);
@@ -135,14 +138,14 @@ fn test_flee_mechanics() {
         Name::new("Fleeing"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     let enemy = world.spawn((
         Name::new("Enemy"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     // Test that flee fails when not in combat
@@ -155,7 +158,7 @@ fn test_flee_mechanics() {
     // Test that flee returns a result (success or failure)
     let result = system.flee(&mut world, entity);
     assert!(result.is_ok());
-    
+
     // If flee succeeded, entity should not be in combat
     let combatant = world.get::<&Combatant>(entity).unwrap();
     if !combatant.in_combat {
@@ -170,19 +173,11 @@ fn test_status_effects_update() {
     let event_bus = EventBus::new();
     let mut system = CombatSystem::new(event_bus);
 
-    let entity = world.spawn((
-        Name::new("Test"),
-        Combatant::new(),
-        BodyAttributes::new(),
-    ));
+    let entity = world.spawn((Name::new("Test"), Combatant::new(), AttributeScores::new()));
 
     // Add a status effect
     let mut status_effects = StatusEffects::new();
-    status_effects.add_effect(StatusEffect::new(
-        StatusEffectType::Defending,
-        1.0,
-        5,
-    ));
+    status_effects.add_effect(StatusEffect::new(StatusEffectType::Defending, 1.0, 5));
     world.insert_one(entity, status_effects).unwrap();
 
     // Update for 0.5 seconds
@@ -213,22 +208,18 @@ fn test_combat_death() {
     let attacker = world.spawn((
         Name::new("Attacker"),
         Combatant::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
-    let mut defender_attrs = BodyAttributes::new();
+    let mut defender_attrs = AttributeScores::new();
     defender_attrs.health_maximum = 1.0;
     defender_attrs.health_current = 1.0;
-    let defender = world.spawn((
-        Name::new("Defender"),
-        Combatant::new(),
-        defender_attrs,
-    ));
+    let defender = world.spawn((Name::new("Defender"), Combatant::new(), defender_attrs));
 
     system.start_combat(&mut world, attacker, defender);
     system.attack(&mut world, attacker, defender);
 
-    let health = world.get::<&BodyAttributes>(defender).unwrap();
+    let health = world.get::<&AttributeScores>(defender).unwrap();
     assert!(health.health_current <= 0.0);
 
     // Combat should end after death
@@ -248,7 +239,7 @@ fn test_combat_with_registry() {
         Name::new("Attacker"),
         Combatant::new(),
         EntityUuid(attacker_uuid),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
     registry.register(attacker, attacker_uuid).unwrap();
 
@@ -257,7 +248,7 @@ fn test_combat_with_registry() {
         Name::new("Defender"),
         Combatant::new(),
         EntityUuid(defender_uuid),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
     registry.register(defender, defender_uuid).unwrap();
 
@@ -275,10 +266,7 @@ fn test_initiative_calculation() {
     let event_bus = EventBus::new();
     let system = CombatSystem::new(event_bus);
 
-    let entity = world.spawn((
-        Name::new("Test"),
-        BodyAttributes::new(),
-    ));
+    let entity = world.spawn((Name::new("Test"), AttributeScores::new()));
 
     let initiative = system.calculate_initiative(&world, entity);
     assert!(initiative > 0);
@@ -294,14 +282,14 @@ fn test_combat_rounds() {
         Name::new("Attacker"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     let defender = world.spawn((
         Name::new("Defender"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     system.start_combat(&mut world, attacker, defender);
@@ -312,7 +300,7 @@ fn test_combat_rounds() {
     }
 
     // Defender should have taken damage
-    let health = world.get::<&BodyAttributes>(defender).unwrap();
+    let health = world.get::<&AttributeScores>(defender).unwrap();
     assert!(health.health_current < 100.0);
 }
 
@@ -345,14 +333,14 @@ fn test_defending_stops_after_duration() {
     let entity = world.spawn((
         Name::new("Defender"),
         Combatant::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     let enemy = world.spawn((
         Name::new("Enemy"),
         Combatant::new(),
         EntityUuid::new(),
-        BodyAttributes::new(),
+        AttributeScores::new(),
     ));
 
     system.start_combat(&mut world, entity, enemy);
@@ -374,5 +362,3 @@ fn test_defending_stops_after_duration() {
         assert_eq!(combatant.defense_bonus, 0);
     }
 }
-
-

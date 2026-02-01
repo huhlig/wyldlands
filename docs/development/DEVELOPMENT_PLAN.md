@@ -497,7 +497,7 @@ Integrated Large Language Models for dynamic NPC dialogue and behavior. Combined
 **Priority: High**
 
 ```rust
-// server/src/ai/llm/mod.rs
+// server/src/ai/models/mod.rs
 
 pub trait LLMProvider: Send + Sync {
     async fn generate(&self, prompt: &str, context: &LLMContext) -> Result<String>;
@@ -862,7 +862,7 @@ tonic = "0.12"                   # gRPC framework
 prost = "0.13"                   # Protocol Buffers
 
 # To Add
-libtelnet-rs = "0.2"             # Telnet protocol
+libtelnet-rs = "0.2"             # Telnet server
 async-openai = "0.24"            # OpenAI API
 anthropic-sdk = "0.2"            # Anthropic API
 reqwest = "0.12"                 # HTTP client

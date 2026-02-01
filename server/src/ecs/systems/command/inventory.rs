@@ -14,10 +14,10 @@
 // limitations under the License.
 //
 
+use crate::ecs::EcsEntity;
 use crate::ecs::components::Container;
 use crate::ecs::context::WorldContext;
 use crate::ecs::systems::CommandResult;
-use crate::ecs::EcsEntity;
 use std::sync::Arc;
 
 /// Command to get list of inventory items

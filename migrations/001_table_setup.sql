@@ -10,6 +10,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS hstore;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 --
 -- Schema
@@ -20,6 +21,10 @@ CREATE SCHEMA IF NOT EXISTS wyldlands;
 -- SET Search Path
 
 SET search_path TO wyldlands, public;
+
+------------------------------------------------------------------------------------------------------------------------
+-- System Tables
+------------------------------------------------------------------------------------------------------------------------
 
 --
 -- Name: settings; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -48,7 +53,6 @@ COMMENT ON COLUMN wyldlands.settings.updated_by IS 'Who last updated this proper
 --
 
 CREATE TYPE wyldlands.account_role AS ENUM ('player', 'storyteller', 'builder', 'admin');
-
 COMMENT ON TYPE wyldlands.account_role IS 'Account role for access control';
 
 --
@@ -69,7 +73,8 @@ CREATE TABLE wyldlands.accounts
     active     BOOLEAN      NOT NULL DEFAULT TRUE,
     role       account_role NOT NULL DEFAULT 'player',
     created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_login TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 COMMENT ON TABLE wyldlands.accounts IS 'Player Accounts';
@@ -83,6 +88,91 @@ COMMENT ON COLUMN wyldlands.accounts.email IS 'Email Address of the Account';
 COMMENT ON COLUMN wyldlands.accounts.rating IS 'Account Rating';
 COMMENT ON COLUMN wyldlands.accounts.active IS 'Account Status';
 COMMENT ON COLUMN wyldlands.accounts.role IS 'Account role (player, storyteller, builder, admin)';
+COMMENT ON COLUMN wyldlands.accounts.created_at IS 'Timestamp when account was first created';
+COMMENT ON COLUMN wyldlands.accounts.updated_at IS 'Timestamp when account was last updated';
+COMMENT ON COLUMN wyldlands.accounts.last_login IS 'Timestamp when account was last logged into';
+
+--
+-- Name: session_state; Type: ENUM; Schema: wyldlands; Owner: wyldlands
+-- Matches: common/src/session.rs::Session
+-- Enumeration of Session States
+--
+
+CREATE TYPE wyldlands.session_state AS ENUM (
+    'Connecting',
+    'Authenticating',
+    'Authenticated',
+    'CharacterSelection',
+    'CharacterCreation',
+    'Playing',
+    'Editing',
+    'Disconnected',
+    'Closed'
+    );
+COMMENT ON TYPE wyldlands.session_state IS 'Server Side Session states';
+
+--
+-- Name: session_protocol; Type: ENUM; Schema: wyldlands; Owner: wyldlands
+-- Enumeration of Session Protocol
+--
+
+CREATE TYPE wyldlands.session_protocol AS ENUM ('Telnet', 'WebSocket');
+COMMENT ON TYPE wyldlands.session_protocol IS 'Server Side Session Protocol Type (Telnet or Websocket)';
+
+--
+-- Name: sessions; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+-- Matches: common/src/session.rs::Session
+--
+
+CREATE TABLE wyldlands.sessions
+(
+    id            UUID PRIMARY KEY,
+    entity_id     UUID,
+    created_at    TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    last_activity TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    state         session_state    NOT NULL,
+    protocol      session_protocol NOT NULL,
+    client_addr   VARCHAR(100)     NOT NULL,
+    metadata      JSONB            NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_sessions_entity_id ON wyldlands.sessions (entity_id);
+CREATE INDEX idx_sessions_state ON wyldlands.sessions (state);
+CREATE INDEX idx_sessions_last_activity ON wyldlands.sessions (last_activity);
+
+COMMENT ON TABLE wyldlands.sessions IS 'Active and historical client sessions';
+COMMENT ON COLUMN wyldlands.sessions.id IS 'Unique session identifier';
+COMMENT ON COLUMN wyldlands.sessions.entity_id IS 'Associated player entity ID';
+COMMENT ON COLUMN wyldlands.sessions.created_at IS 'Session creation timestamp';
+COMMENT ON COLUMN wyldlands.sessions.last_activity IS 'Last activity timestamp';
+COMMENT ON COLUMN wyldlands.sessions.state IS 'Current session state';
+COMMENT ON COLUMN wyldlands.sessions.protocol IS 'Connection server (Telnet/WebSocket)';
+COMMENT ON COLUMN wyldlands.sessions.client_addr IS 'Client IP address and port';
+COMMENT ON COLUMN wyldlands.sessions.metadata IS 'Session metadata (terminal type, window size, etc.)';
+
+--
+-- Name: session_command_queue; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+--
+
+CREATE TABLE wyldlands.session_command_queue
+(
+    id         SERIAL PRIMARY KEY,
+    session_id UUID        NOT NULL REFERENCES wyldlands.sessions (id) ON DELETE CASCADE,
+    command    TEXT        NOT NULL,
+    queued_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_command_queue_session ON wyldlands.session_command_queue (session_id);
+
+COMMENT ON TABLE wyldlands.session_command_queue IS 'Queued commands for disconnected sessions';
+COMMENT ON COLUMN wyldlands.session_command_queue.id IS 'Queue entry ID';
+COMMENT ON COLUMN wyldlands.session_command_queue.session_id IS 'Associated session ID';
+COMMENT ON COLUMN wyldlands.session_command_queue.command IS 'Queued command text';
+COMMENT ON COLUMN wyldlands.session_command_queue.queued_at IS 'Time command was queued';
+
+------------------------------------------------------------------------------------------------------------------------
+-- World Tables
+------------------------------------------------------------------------------------------------------------------------
 
 --
 -- Name: area_kind; Type: ENUM; Schema: wyldlands; Owner: wyldlands
@@ -129,35 +219,6 @@ CREATE TYPE wyldlands.damage_type AS ENUM ('Blunt', 'Piercing', 'Slashing', 'Col
     'Electric', 'Acid', 'Arcane', 'Psychic', 'Sonic', 'Force');
 
 --
--- Name: ai_behavior; Type: ENUM; Schema: wyldlands; Owner: wyldlands
--- Enumeration of AI Behaviors
---
-
-CREATE TYPE wyldlands.ai_behavior AS ENUM ('Passive', 'Wandering', 'Aggressive', 'Defensive', 'Friendly', 'Merchant',
-    'Quest', 'Custom');
-
---
--- Name: ai_state; Type: ENUM; Schema: wyldlands; Owner: wyldlands
--- Enumeration of AI States
---
-
-CREATE TYPE wyldlands.ai_state AS ENUM ('Idle', 'Moving', 'Combat', 'Fleeing', 'Following', 'Dialogue');
-
---
--- Name: session_state; Type: ENUM; Schema: wyldlands; Owner: wyldlands
--- Enumeration of Session States
---
-
-CREATE TYPE wyldlands.session_state AS ENUM ('Connecting', 'Authenticating', 'CharacterSelection', 'Playing', 'Disconnected', 'Closed');
-
---
--- Name: session_protocol; Type: ENUM; Schema: wyldlands; Owner: wyldlands
--- Enumeration of Session Protocol
---
-
-CREATE TYPE wyldlands.session_protocol AS ENUM ('Telnet', 'WebSocket');
-
---
 -- Name: entities; Type: TABLE; Schema: wyldlands; Owner: wyldlands
 -- Base table for all ECS entities
 --
@@ -179,6 +240,31 @@ COMMENT ON COLUMN wyldlands.entities.updated_at IS 'Last save timestamp';
 ------------------------------------------------------------------------------------------------------------------------
 -- ECS Component Tables                                                                                              ---
 ------------------------------------------------------------------------------------------------------------------------
+
+--
+-- Name: entity_metadata; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+-- Arbitrary Metadata Table for Entities
+--
+
+CREATE TABLE wyldlands.entity_metadata
+(
+    entity_id  UUID         NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
+    key        VARCHAR(100) NOT NULL,
+    value      TEXT         NOT NULL,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (entity_id, key)
+);
+
+CREATE INDEX idx_entity_metadata_entity ON wyldlands.entity_metadata (entity_id);
+CREATE INDEX idx_entity_metadata_key ON wyldlands.entity_metadata (key);
+
+COMMENT ON TABLE wyldlands.entity_metadata IS 'Flexible key-value metadata storage for entities';
+COMMENT ON COLUMN wyldlands.entity_metadata.entity_id IS 'Entity UUID';
+COMMENT ON COLUMN wyldlands.entity_metadata.key IS 'Metadata key (e.g., "talents", "custom_data")';
+COMMENT ON COLUMN wyldlands.entity_metadata.value IS 'Metadata value (can be JSON or plain text)';
+COMMENT ON COLUMN wyldlands.entity_metadata.created_at IS 'When metadata was created';
+COMMENT ON COLUMN wyldlands.entity_metadata.updated_at IS 'When metadata was last updated';
 
 --
 -- Name: entity_avatars; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -327,12 +413,8 @@ CREATE TABLE wyldlands.entity_body_attributes
     score_offence  INTEGER NOT NULL DEFAULT 10,
     score_finesse  INTEGER NOT NULL DEFAULT 10,
     score_defence  INTEGER NOT NULL DEFAULT 10,
-    health_current REAL    NOT NULL,
-    health_maximum REAL    NOT NULL,
-    health_regen   REAL    NOT NULL DEFAULT 1.0,
-    energy_current REAL    NOT NULL,
-    energy_maximum REAL    NOT NULL,
-    energy_regen   REAL    NOT NULL DEFAULT 1.0
+    health_current FLOAT   NOT NULL DEFAULT 0,
+    energy_current FLOAT   NOT NULL DEFAULT 0
 );
 
 COMMENT ON TABLE wyldlands.entity_body_attributes IS 'Attributes component - core character stats';
@@ -341,11 +423,7 @@ COMMENT ON COLUMN wyldlands.entity_body_attributes.score_offence IS 'Physical Of
 COMMENT ON COLUMN wyldlands.entity_body_attributes.score_finesse IS 'Physical Finesse Score';
 COMMENT ON COLUMN wyldlands.entity_body_attributes.score_defence IS 'Physical Defence Score';
 COMMENT ON COLUMN wyldlands.entity_body_attributes.health_current IS 'Current Physical Health';
-COMMENT ON COLUMN wyldlands.entity_body_attributes.health_maximum IS 'Maximum Physical Health';
-COMMENT ON COLUMN wyldlands.entity_body_attributes.health_regen IS 'Physical Health Regeneration';
 COMMENT ON COLUMN wyldlands.entity_body_attributes.energy_current IS 'Current Physical Energy';
-COMMENT ON COLUMN wyldlands.entity_body_attributes.energy_maximum IS 'Maximum Physical Energy';
-COMMENT ON COLUMN wyldlands.entity_body_attributes.energy_regen IS 'Physical Energy Regeneration';
 
 --
 -- Name: entity_mind_attributes; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -358,12 +436,8 @@ CREATE TABLE wyldlands.entity_mind_attributes
     score_offence  INTEGER NOT NULL DEFAULT 10,
     score_finesse  INTEGER NOT NULL DEFAULT 10,
     score_defence  INTEGER NOT NULL DEFAULT 10,
-    health_current REAL    NOT NULL,
-    health_maximum REAL    NOT NULL,
-    health_regen   REAL    NOT NULL DEFAULT 1.0,
-    energy_current REAL    NOT NULL,
-    energy_maximum REAL    NOT NULL,
-    energy_regen   REAL    NOT NULL DEFAULT 1.0
+    health_current FLOAT   NOT NULL DEFAULT 0,
+    energy_current FLOAT   NOT NULL DEFAULT 0
 );
 
 COMMENT ON TABLE wyldlands.entity_mind_attributes IS 'Attributes component - core character stats';
@@ -372,11 +446,7 @@ COMMENT ON COLUMN wyldlands.entity_mind_attributes.score_offence IS 'Mental Offe
 COMMENT ON COLUMN wyldlands.entity_mind_attributes.score_finesse IS 'Mental Finesse Score';
 COMMENT ON COLUMN wyldlands.entity_mind_attributes.score_defence IS 'Mental Defence Score';
 COMMENT ON COLUMN wyldlands.entity_mind_attributes.health_current IS 'Current Mental Health';
-COMMENT ON COLUMN wyldlands.entity_mind_attributes.health_maximum IS 'Maximum Mental Health';
-COMMENT ON COLUMN wyldlands.entity_mind_attributes.health_regen IS 'Mental Health Regeneration';
 COMMENT ON COLUMN wyldlands.entity_mind_attributes.energy_current IS 'Current Mental Energy';
-COMMENT ON COLUMN wyldlands.entity_mind_attributes.energy_maximum IS 'Maximum Mental Energy';
-COMMENT ON COLUMN wyldlands.entity_mind_attributes.energy_regen IS 'Mental Energy Regeneration';
 
 --
 -- Name: entity_soul_attributes; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -389,12 +459,8 @@ CREATE TABLE wyldlands.entity_soul_attributes
     score_offence  INTEGER NOT NULL DEFAULT 10,
     score_finesse  INTEGER NOT NULL DEFAULT 10,
     score_defence  INTEGER NOT NULL DEFAULT 10,
-    health_current REAL    NOT NULL,
-    health_maximum REAL    NOT NULL,
-    health_regen   REAL    NOT NULL DEFAULT 1.0,
-    energy_current REAL    NOT NULL,
-    energy_maximum REAL    NOT NULL,
-    energy_regen   REAL    NOT NULL DEFAULT 1.0
+    health_current FLOAT   NOT NULL DEFAULT 0,
+    energy_current FLOAT   NOT NULL DEFAULT 0
 );
 
 COMMENT ON TABLE wyldlands.entity_soul_attributes IS 'Attributes component - core character stats';
@@ -403,11 +469,7 @@ COMMENT ON COLUMN wyldlands.entity_soul_attributes.score_offence IS 'Spiritual O
 COMMENT ON COLUMN wyldlands.entity_soul_attributes.score_finesse IS 'Spiritual Finesse Score';
 COMMENT ON COLUMN wyldlands.entity_soul_attributes.score_defence IS 'Spiritual Defence Score';
 COMMENT ON COLUMN wyldlands.entity_soul_attributes.health_current IS 'Current Spiritual Health';
-COMMENT ON COLUMN wyldlands.entity_soul_attributes.health_maximum IS 'Maximum Spiritual Health';
-COMMENT ON COLUMN wyldlands.entity_soul_attributes.health_regen IS 'Mental Spiritual Regeneration';
 COMMENT ON COLUMN wyldlands.entity_soul_attributes.energy_current IS 'Current Spiritual Energy';
-COMMENT ON COLUMN wyldlands.entity_soul_attributes.energy_maximum IS 'Maximum Spiritual Energy';
-COMMENT ON COLUMN wyldlands.entity_soul_attributes.energy_regen IS 'Spiritual Energy Regeneration';
 
 --
 -- Name: entity_skills; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -418,7 +480,6 @@ CREATE TABLE wyldlands.entity_skills
 (
     entity_id  UUID         NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
     skill_name VARCHAR(100) NOT NULL,
-    level      INTEGER      NOT NULL DEFAULT 1,
     experience INTEGER      NOT NULL DEFAULT 0,
     knowledge  INTEGER      NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_id, skill_name)
@@ -427,9 +488,26 @@ CREATE TABLE wyldlands.entity_skills
 COMMENT ON TABLE wyldlands.entity_skills IS 'Skills component - individual skill levels';
 COMMENT ON COLUMN wyldlands.entity_skills.entity_id IS 'Entity ID of the object';
 COMMENT ON COLUMN wyldlands.entity_skills.skill_name IS 'Name of Skill';
-COMMENT ON COLUMN wyldlands.entity_skills.level IS 'Current Skill level';
 COMMENT ON COLUMN wyldlands.entity_skills.experience IS 'How much experience is in the skill';
 COMMENT ON COLUMN wyldlands.entity_skills.knowledge IS 'How much knowledge is in the skill';
+
+--
+-- Name: entity_talents; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+-- Component providing an Entities Talent list
+--
+
+CREATE TABLE wyldlands.entity_talents
+(
+    entity_id   UUID         NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
+    talent_name VARCHAR(100) NOT NULL,
+    experience  INTEGER      NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_id, talent_name)
+);
+
+COMMENT ON TABLE wyldlands.entity_talents IS 'Talents component - individual talent ranks';
+COMMENT ON COLUMN wyldlands.entity_talents.entity_id IS 'Entity ID of the object';
+COMMENT ON COLUMN wyldlands.entity_talents.talent_name IS 'Name of Talent';
+COMMENT ON COLUMN wyldlands.entity_talents.experience IS 'How much experience is in the talent';
 
 -- Spatial Components
 
@@ -697,7 +775,24 @@ COMMENT ON COLUMN wyldlands.entity_armor_defense.entity_id IS 'Entity ID of Item
 COMMENT ON COLUMN wyldlands.entity_armor_defense.damage_kind IS 'Kind of Damage Defended Against';
 COMMENT ON COLUMN wyldlands.entity_armor_defense.defense IS 'Defense Rating for this kind of Damage';
 
+------------------------------------------------------------------------------------------------------------------------
 -- AI Components
+------------------------------------------------------------------------------------------------------------------------
+
+--
+-- Name: ai_behavior; Type: ENUM; Schema: wyldlands; Owner: wyldlands
+-- Enumeration of AI Behaviors
+--
+
+CREATE TYPE wyldlands.ai_behavior AS ENUM ('Passive', 'Wandering', 'Aggressive', 'Defensive', 'Friendly', 'Merchant',
+    'Quest', 'Custom');
+
+--
+-- Name: ai_state; Type: ENUM; Schema: wyldlands; Owner: wyldlands
+-- Enumeration of AI States
+--
+
+CREATE TYPE wyldlands.ai_state AS ENUM ('Idle', 'Moving', 'Combat', 'Fleeing', 'Following', 'Dialogue');
 
 --
 -- Name: entity_ai_controller; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -740,6 +835,34 @@ COMMENT ON TABLE wyldlands.entity_personality IS 'Personality component - NPC pe
 COMMENT ON COLUMN wyldlands.entity_personality.entity_id IS 'Entity ID ';
 COMMENT ON COLUMN wyldlands.entity_personality.background IS 'Character Background Description';
 COMMENT ON COLUMN wyldlands.entity_personality.speaking_style IS 'Speaking Style';
+
+--
+-- Name: entity_personality_mood; Type: TABLE; Schema: wyldlands; Owner: wyldlands
+-- Entity Personality Emotional State Information
+--
+
+CREATE TABLE wyldlands.entity_personality_mood
+(
+    entity_id        UUID PRIMARY KEY REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
+    positive_valance FLOAT NOT NULL DEFAULT 0.0,
+    negative_valance FLOAT NOT NULL DEFAULT 0.0,
+    arousal          FLOAT NOT NULL DEFAULT 0.0,
+    anxiety          FLOAT NOT NULL DEFAULT 0.0,
+    hostility        FLOAT NOT NULL DEFAULT 0.0,
+    engagement       FLOAT NOT NULL DEFAULT 0.0,
+    confidence       FLOAT NOT NULL DEFAULT 0.0
+);
+
+COMMENT ON TABLE wyldlands.entity_personality_mood IS 'Personality Emotional State Component - NPC Personality Emotional State for LLM';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.entity_id IS 'Entity ID ';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.positive_valance IS 'Positive valence represents the intrinsic attractiveness and pleasantness of the current emotional experience';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.negative_valance IS 'Negative valence represents the intrinsic averseness and unpleasantness of the current emotional experience';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.arousal IS 'Arousal represents the activation level of the organism';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.anxiety IS 'Anxiety represents apprehensive expectation about potential future threats';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.hostility IS 'Hostility represents antagonistic orientation toward others';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.engagement IS 'Engagement represents the degree of cognitive and motivational involvement with the environment';
+COMMENT ON COLUMN wyldlands.entity_personality_mood.confidence IS 'Confidence represents perceived competence and control';
+
 
 --
 -- Name: entity_personality_bigfive; Type: TABLE; Schema: wyldlands; Owner: wyldlands
@@ -876,50 +999,117 @@ COMMENT ON COLUMN wyldlands.entity_personality_goals.created_at IS 'When goal wa
 
 --
 -- Name: entity_memory; Type: TABLE; Schema: wyldlands; Owner: wyldlands
--- Entity Memory
+-- Entity Memory - Enhanced AI Memory System
 --
 
 CREATE TABLE wyldlands.entity_memory
 (
-    entity_id    UUID    NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
-    memory_id    SERIAL,
-    timestamp    BIGINT  NOT NULL,
-    event        TEXT    NOT NULL,
-    importance   REAL    NOT NULL,
-    is_long_term BOOLEAN NOT NULL DEFAULT FALSE,
-    PRIMARY KEY (entity_id, memory_id)
+    memory_id     UUID                     NOT NULL PRIMARY KEY,
+    entity_id     UUID                     NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
+    kind          VARCHAR(20)              NOT NULL CHECK (kind IN ('World', 'Experience', 'Opinion', 'Observation')),
+    content       TEXT                     NOT NULL CHECK (length(content) > 0 AND length(content) <= 10000),
+    timestamp     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    last_accessed TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    access_count  INTEGER                  NOT NULL DEFAULT 0 CHECK (access_count >= 0),
+    importance    REAL                     NOT NULL DEFAULT 0.5 CHECK (importance >= 0.0 AND importance <= 1.0),
+    decay_rate    REAL                     NOT NULL DEFAULT 0.01 CHECK (decay_rate >= 0.0),
+    context       TEXT,
+    metadata      JSONB                    NOT NULL DEFAULT '{}',
+    related       JSONB                    NOT NULL DEFAULT '{}',
+    embedding     VECTOR(384),
+    tags          TEXT[]                   NOT NULL DEFAULT ARRAY []::TEXT[]
 );
 
-CREATE INDEX idx_memory_entity ON wyldlands.entity_memory (entity_id);
-CREATE INDEX idx_memory_importance ON wyldlands.entity_memory (entity_id, importance DESC);
+-- Comments
+COMMENT ON TABLE wyldlands.entity_memory IS 'Enhanced AI memory system for NPCs and entities';
+COMMENT ON COLUMN wyldlands.entity_memory.memory_id IS 'Unique memory identifier (UUID)';
+COMMENT ON COLUMN wyldlands.entity_memory.entity_id IS 'Entity that owns this memory';
+COMMENT ON COLUMN wyldlands.entity_memory.kind IS 'Memory type: World, Experience, Opinion, or Observation';
+COMMENT ON COLUMN wyldlands.entity_memory.content IS 'Natural language description of the memory';
+COMMENT ON COLUMN wyldlands.entity_memory.timestamp IS 'When the memory was created or event occurred';
+COMMENT ON COLUMN wyldlands.entity_memory.last_accessed IS 'When the memory was last accessed';
+COMMENT ON COLUMN wyldlands.entity_memory.access_count IS 'Number of times memory has been accessed';
+COMMENT ON COLUMN wyldlands.entity_memory.importance IS 'Base importance score (0.0 to 1.0)';
+COMMENT ON COLUMN wyldlands.entity_memory.decay_rate IS 'Rate at which importance decays over time';
+COMMENT ON COLUMN wyldlands.entity_memory.context IS 'Additional context about the memory circumstances';
+COMMENT ON COLUMN wyldlands.entity_memory.metadata IS 'User-defined key-value metadata (JSON)';
+COMMENT ON COLUMN wyldlands.entity_memory.related IS 'Related memory IDs with relationship descriptions (JSON)';
+COMMENT ON COLUMN wyldlands.entity_memory.embedding IS 'Vector embedding for semantic similarity search';
+COMMENT ON COLUMN wyldlands.entity_memory.tags IS 'Tags for categorical filtering';
 
-COMMENT ON TABLE wyldlands.entity_memory IS 'Memory component - NPC memories';
-COMMENT ON COLUMN wyldlands.entity_memory.entity_id IS 'Entity ID';
-COMMENT ON COLUMN wyldlands.entity_memory.memory_id IS 'Sequential Memory ID';
-COMMENT ON COLUMN wyldlands.entity_memory.timestamp IS 'When memory was created';
-COMMENT ON COLUMN wyldlands.entity_memory.event IS 'Description of the event';
-COMMENT ON COLUMN wyldlands.entity_memory.importance IS 'Importance of memory (0.0 - 1.0)';
-COMMENT ON COLUMN wyldlands.entity_memory.is_long_term IS 'Is this a long-term memory';
+-- Composite index for entity_id
+-- Optimizes: Filtered recalls by entity_id
+CREATE INDEX idx_memory_entity ON wyldlands.entity_memory (entity_id);
+COMMENT ON INDEX wyldlands.idx_memory_entity IS 'Index for filtered memory recalls by entity_id';
+
+-- Composite index for entity + kind
+-- Optimizes: Filtered recalls by memory kind
+CREATE INDEX idx_memory_entity_kind ON wyldlands.entity_memory (entity_id, kind);
+COMMENT ON INDEX wyldlands.idx_memory_entity_kind IS 'Index for filtered memory recalls by entity_id and memory kind';
+
+-- Composite index for entity + kind + timestamp
+-- Optimizes: Filtered recalls by memory kind
+CREATE INDEX idx_memory_entity_kind_timestamp ON wyldlands.entity_memory (entity_id, kind, timestamp DESC);
+COMMENT ON INDEX wyldlands.idx_memory_entity_kind_timestamp IS 'Composite index for filtered memory recalls by kind';
+
+-- Composite index for entity + importance (for pruning queries)
+-- Optimizes: Finding low-importance memories to prune
+CREATE INDEX idx_memory_entity_importance ON wyldlands.entity_memory (entity_id, importance DESC);
+COMMENT ON INDEX wyldlands.idx_memory_entity_importance IS 'Composite index for importance-based queries and pruning';
+
+-- Partial index for high-importance memories
+-- Optimizes: Queries for important memories
+CREATE INDEX idx_memory_important ON wyldlands.entity_memory (entity_id, importance DESC) WHERE importance > 0.7;
+COMMENT ON INDEX wyldlands.idx_memory_important IS 'Partial index for high-importance memories (>0.7)';
+
+-- Composite index for entity + timestamp (most common query pattern)
+-- Optimizes: SELECT * FROM entity_memory WHERE entity_id = ? ORDER BY timestamp DESC
+CREATE INDEX idx_memory_entity_timestamp ON wyldlands.entity_memory (entity_id, timestamp DESC);
+COMMENT ON INDEX wyldlands.idx_memory_entity_timestamp IS 'Composite index for entity memory list queries ordered by timestamp';
+
+-- GIN index for tags (array operations)
+-- Optimizes: Tag-based filtering in recall operations
+CREATE INDEX idx_memory_tags ON wyldlands.entity_memory USING gin (tags);
+COMMENT ON INDEX wyldlands.idx_memory_tags IS 'GIN index for tag-based filtering';
+
+-- GIN index for metadata (JSONB operations)
+-- Optimizes: Metadata-based queries
+CREATE INDEX idx_memory_metadata ON wyldlands.entity_memory USING gin (metadata);
+COMMENT ON INDEX wyldlands.idx_memory_metadata IS 'GIN index for metadata JSONB queries';
+
+-- HNSW index for vector similarity search
+-- Optimizes: Semantic similarity queries using embeddings
+-- Lists parameter tuned for 10K-100K memories (adjust based on scale)
+CREATE INDEX idx_memory_embedding ON wyldlands.entity_memory
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+COMMENT ON INDEX wyldlands.idx_memory_embedding IS 'HNSW index for vector similarity search (cosine distance)';
 
 --
 -- Name: entity_memory_entities; Type: TABLE; Schema: wyldlands; Owner: wyldlands
--- Entity Memory Entities
+-- Entity Memory Entities - Entities involved in memories
 --
 
 CREATE TABLE wyldlands.entity_memory_entities
 (
-    entity_id          UUID    NOT NULL,
-    memory_id          INTEGER NOT NULL,
-    involved_entity_id UUID    NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
-    FOREIGN KEY (entity_id, memory_id) REFERENCES wyldlands.entity_memory (entity_id, memory_id) ON DELETE CASCADE
+    memory_id          UUID        NOT NULL REFERENCES wyldlands.entity_memory (memory_id) ON DELETE CASCADE,
+    involved_entity_id UUID        NOT NULL REFERENCES wyldlands.entities (uuid) ON DELETE CASCADE,
+    role               VARCHAR(50) NOT NULL,
+    PRIMARY KEY (memory_id, involved_entity_id)
 );
 
-CREATE INDEX idx_memory_entities_memory ON wyldlands.entity_memory_entities (entity_id, memory_id);
-
-COMMENT ON TABLE wyldlands.entity_memory_entities IS 'Entities involved in memories';
-COMMENT ON COLUMN wyldlands.entity_memory_entities.entity_id IS 'Entity ID that has the memory';
+COMMENT ON TABLE wyldlands.entity_memory_entities IS 'Entities involved in memories with their roles';
 COMMENT ON COLUMN wyldlands.entity_memory_entities.memory_id IS 'Memory ID';
 COMMENT ON COLUMN wyldlands.entity_memory_entities.involved_entity_id IS 'Entity involved in the memory';
+COMMENT ON COLUMN wyldlands.entity_memory_entities.role IS 'Role or description of entity in memory (e.g., "attacker", "merchant")';
+
+-- Index for entity memory relationships
+-- Optimizes: Finding memories involving specific entities
+CREATE INDEX idx_memory_entities_memory ON wyldlands.entity_memory_entities (memory_id);
+CREATE INDEX idx_memory_entities_entity ON wyldlands.entity_memory_entities (involved_entity_id);
+
+-- Analyze tables to update statistics
+ANALYZE wyldlands.entity_memory;
+ANALYZE wyldlands.entity_memory_entities;
 
 -- Interaction Components
 
@@ -1041,56 +1231,6 @@ COMMENT ON COLUMN wyldlands.starting_locations.room_id IS 'UUID of the room enti
 COMMENT ON COLUMN wyldlands.starting_locations.enabled IS 'Whether this location is currently available for selection';
 COMMENT ON COLUMN wyldlands.starting_locations.sort_order IS 'Display order (lower numbers first)';
 
---
--- Name: sessions; Type: TABLE; Schema: wyldlands; Owner: wyldlands
--- Matches: common/src/session.rs::Session
---
-
-CREATE TABLE wyldlands.sessions
-(
-    id            UUID PRIMARY KEY,
-    entity_id     UUID,
-    created_at    TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
-    last_activity TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
-    state         session_state    NOT NULL,
-    protocol      session_protocol NOT NULL,
-    client_addr   VARCHAR(100)     NOT NULL,
-    metadata      JSONB            NOT NULL DEFAULT '{}'::jsonb
-);
-
-CREATE INDEX idx_sessions_entity_id ON wyldlands.sessions (entity_id);
-CREATE INDEX idx_sessions_state ON wyldlands.sessions (state);
-CREATE INDEX idx_sessions_last_activity ON wyldlands.sessions (last_activity);
-
-COMMENT ON TABLE wyldlands.sessions IS 'Active and historical client sessions';
-COMMENT ON COLUMN wyldlands.sessions.id IS 'Unique session identifier';
-COMMENT ON COLUMN wyldlands.sessions.entity_id IS 'Associated player entity ID';
-COMMENT ON COLUMN wyldlands.sessions.created_at IS 'Session creation timestamp';
-COMMENT ON COLUMN wyldlands.sessions.last_activity IS 'Last activity timestamp';
-COMMENT ON COLUMN wyldlands.sessions.state IS 'Current session state';
-COMMENT ON COLUMN wyldlands.sessions.protocol IS 'Connection protocol (Telnet/WebSocket)';
-COMMENT ON COLUMN wyldlands.sessions.client_addr IS 'Client IP address and port';
-COMMENT ON COLUMN wyldlands.sessions.metadata IS 'Session metadata (terminal type, window size, etc.)';
-
---
--- Name: session_command_queue; Type: TABLE; Schema: wyldlands; Owner: wyldlands
---
-
-CREATE TABLE wyldlands.session_command_queue
-(
-    id         SERIAL PRIMARY KEY,
-    session_id UUID        NOT NULL REFERENCES wyldlands.sessions (id) ON DELETE CASCADE,
-    command    TEXT        NOT NULL,
-    queued_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_command_queue_session ON wyldlands.session_command_queue (session_id);
-
-COMMENT ON TABLE wyldlands.session_command_queue IS 'Queued commands for disconnected sessions';
-COMMENT ON COLUMN wyldlands.session_command_queue.id IS 'Queue entry ID';
-COMMENT ON COLUMN wyldlands.session_command_queue.session_id IS 'Associated session ID';
-COMMENT ON COLUMN wyldlands.session_command_queue.command IS 'Queued command text';
-COMMENT ON COLUMN wyldlands.session_command_queue.queued_at IS 'Time command was queued';
 
 
 --
@@ -1118,18 +1258,18 @@ CREATE TYPE help_category AS ENUM (
 
 CREATE TABLE wyldlands.help_topics
 (
-    keyword      VARCHAR(100) PRIMARY KEY,
-    category     help_category NOT NULL,
-    title        VARCHAR(200)  NOT NULL,
-    content      TEXT          NOT NULL,
-    syntax       TEXT,
-    examples     TEXT,
-    see_also     TEXT[],
-    min_role     account_role  NOT NULL DEFAULT 'player',
-    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    created_by   UUID,
-    updated_by   UUID
+    keyword    VARCHAR(100) PRIMARY KEY,
+    category   help_category NOT NULL,
+    title      VARCHAR(200)  NOT NULL,
+    content    TEXT          NOT NULL,
+    syntax     TEXT,
+    examples   TEXT,
+    see_also   TEXT[],
+    min_role   account_role  NOT NULL DEFAULT 'player',
+    created_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID
 );
 
 COMMENT ON TABLE wyldlands.help_topics IS 'Help topics for commands, skills, talents, and other game features';

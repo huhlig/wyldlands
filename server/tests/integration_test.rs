@@ -17,7 +17,7 @@
 //! Integration tests for the ECS system
 
 use wyldlands_server::ecs::{
-    EcsEntity, GameWorld, components,
+    GameWorld, components,
     context::WorldContext,
     events::{EventBus, GameEvent},
     systems,
@@ -28,9 +28,8 @@ use wyldlands_server::persistence::PersistenceManager;
 async fn test_full_gameplay_loop() {
     // Create a mock persistence manager (requires actual database, so this test needs to be adapted)
     // For now, we'll use a mock setup - in real tests, you'd need a test database
-    let db_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_|
-        "postgresql://test:test@localhost/test".to_string()
-    );
+    let db_url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgresql://test:test@localhost/test".to_string());
 
     // Skip test if no test database is configured
     let pool = match sqlx::postgres::PgPoolOptions::new()
@@ -65,9 +64,12 @@ async fn test_full_gameplay_loop() {
     let player = world.spawn((
         player_uuid,
         components::Name::new("Hero"),
-        components::Location::new(components::EntityId::from_uuid(area_id), components::EntityId::from_uuid(room_id)),
+        components::Location::new(
+            components::EntityId::from_uuid(area_id),
+            components::EntityId::from_uuid(room_id),
+        ),
         components::Container::new(Some(20)),
-        components::BodyAttributes::new(),
+        components::AttributeScores::new(),
         components::Combatant::new(),
         components::Equipment::new(),
     ));
@@ -77,8 +79,11 @@ async fn test_full_gameplay_loop() {
     let npc = world.spawn((
         npc_uuid,
         components::Name::new("Goblin"),
-        components::Location::new(components::EntityId::from_uuid(area_id), components::EntityId::from_uuid(room_id)),
-        components::BodyAttributes::new(),
+        components::Location::new(
+            components::EntityId::from_uuid(area_id),
+            components::EntityId::from_uuid(room_id),
+        ),
+        components::AttributeScores::new(),
         components::Combatant::new(),
         components::AIController::new(components::BehaviorType::Aggressive),
     ));
@@ -88,7 +93,10 @@ async fn test_full_gameplay_loop() {
     let sword = world.spawn((
         sword_uuid,
         components::Name::new("Iron Sword"),
-        components::Location::new(components::EntityId::from_uuid(area_id), components::EntityId::from_uuid(room_id)),
+        components::Location::new(
+            components::EntityId::from_uuid(area_id),
+            components::EntityId::from_uuid(room_id),
+        ),
         components::Containable::new(5.0),
         components::Weapon::new(10, 15, components::DamageType::Slashing),
     ));
@@ -105,16 +113,23 @@ async fn test_full_gameplay_loop() {
     // Test 2: Player equips sword
     {
         let mut equipment = world.get::<&mut components::Equipment>(player).unwrap();
-        equipment.equip(components::EquipSlot::MainHand, components::EntityId::from_uuid(sword_uuid.0));
+        equipment.equip(
+            components::EquipSlot::MainHand,
+            components::EntityId::from_uuid(sword_uuid.0),
+        );
     }
 
     // Test 3: Execute look command
     drop(world); // Release lock before calling execute
-    let result = command_system.execute(context.clone(), player, "look", &[]).await;
+    let result = command_system
+        .execute(context.clone(), player, "look", &[])
+        .await;
     assert!(matches!(result, systems::CommandResult::Success(_)));
 
     // Test 4: Execute inventory command
-    let result = command_system.execute(context.clone(), player, "inventory", &[]).await;
+    let result = command_system
+        .execute(context.clone(), player, "inventory", &[])
+        .await;
     assert!(matches!(result, systems::CommandResult::Success(_)));
 
     // Re-acquire lock for combat system
@@ -154,10 +169,13 @@ fn test_persistence_round_trip() {
         uuid,
         components::Name::new("Persistent Hero"),
         components::Description::new("A brave hero", "A very brave hero indeed"),
-        components::Location::new(components::EntityId::from_uuid(area_id), components::EntityId::from_uuid(room_id)),
-        components::BodyAttributes::new(),
-        components::MindAttributes::new(),
-        components::SoulAttributes::new(),
+        components::Location::new(
+            components::EntityId::from_uuid(area_id),
+            components::EntityId::from_uuid(room_id),
+        ),
+        components::BodyAttributeScores::new(),
+        components::MindAttributeScores::new(),
+        components::SoulAttributeScores::new(),
         components::Skills::new(),
     ));
 
@@ -179,8 +197,10 @@ fn test_persistence_round_trip() {
     // assert_eq!(loc.area_id, area_id);
     // assert_eq!(loc.room_id, room_id);
 
-    let body_attrs = new_world.get::<&components::BodyAttributes>(new_entity).unwrap();
-    assert_eq!(body_attrs.health_maximum, 100.0);
+    let body_attrs = new_world
+        .get::<&components::BodyAttributeScores>(new_entity)
+        .unwrap();
+    assert_eq!(body_attrs.0.health_maximum, 100.0);
 
     // Verify UUID is preserved
     let new_uuid = new_world
@@ -214,11 +234,18 @@ fn test_multi_entity_interactions() {
     let item = world.spawn((
         components::Name::new("Gold Coin"),
         components::Containable::new(0.1),
-        components::Location::new(components::EntityId::from_uuid(area_id), components::EntityId::from_uuid(room_id)),
+        components::Location::new(
+            components::EntityId::from_uuid(area_id),
+            components::EntityId::from_uuid(room_id),
+        ),
     ));
 
     // Give item to player1 using inventory system
-    assert!(inventory_system.pickup_item(&mut world, player1, item).is_ok());
+    assert!(
+        inventory_system
+            .pickup_item(&mut world, player1, item)
+            .is_ok()
+    );
 
     // Transfer from player1 to player2
     assert!(
@@ -289,13 +316,13 @@ fn test_combat_with_equipment() {
     let attacker = world.spawn((
         components::Name::new("Warrior"),
         components::Combatant::new(),
-        components::BodyAttributes::new(),
+        components::AttributeScores::new(),
         components::Equipment::new(),
     ));
 
     // Create weapon
     let weapon_uuid = components::EntityUuid::new();
-    let weapon = world.spawn((
+    let _weapon = world.spawn((
         weapon_uuid,
         components::Name::new("Great Sword"),
         components::Weapon::new(15, 25, components::DamageType::Slashing),
@@ -304,14 +331,17 @@ fn test_combat_with_equipment() {
     // Equip weapon
     {
         let mut equipment = world.get::<&mut components::Equipment>(attacker).unwrap();
-        equipment.equip(components::EquipSlot::MainHand, components::EntityId::from_uuid(weapon_uuid.0));
+        equipment.equip(
+            components::EquipSlot::MainHand,
+            components::EntityId::from_uuid(weapon_uuid.0),
+        );
     }
 
     // Create defender
     let defender = world.spawn((
         components::Name::new("Target"),
         components::Combatant::new(),
-        components::BodyAttributes::new(),
+        components::AttributeScores::new(),
     ));
 
     // Attack
@@ -321,12 +351,12 @@ fn test_combat_with_equipment() {
     let result = result.unwrap();
     assert!(result.damage >= 15, "Damage should include weapon bonus");
 
-    let defender_attrs = world.get::<&components::BodyAttributes>(defender).unwrap();
+    let defender_attrs = world.get::<&components::AttributeScores>(defender).unwrap();
     assert!(defender_attrs.health_current < defender_attrs.health_maximum);
 }
 
 #[test]
-fn test_ai_memory_system() {
+fn test_ai_memory_marker() {
     let mut world = GameWorld::new();
 
     let npc = world.spawn((
@@ -336,25 +366,7 @@ fn test_ai_memory_system() {
         components::Memory::new(),
     ));
 
-    // Add memories
-    {
-        let mut memory = world.get::<&mut components::Memory>(npc).unwrap();
-        memory.add_memory("Met a traveler".to_string(), 0.5, vec![]);
-        memory.add_memory("Witnessed a battle".to_string(), 0.9, vec![]);
-        memory.add_memory("Found a coin".to_string(), 0.3, vec![]);
-    }
-
-    // Verify memory storage
-    let memory = world.get::<&components::Memory>(npc).unwrap();
-    assert_eq!(memory.memories.len(), 3);
-
-    // Count long-term memories (importance > 0.7)
-    let long_term_count = memory.memories.iter().filter(|m| m.is_long_term).count();
-    assert_eq!(long_term_count, 1); // Only important memory (>0.7)
-
-    let important = memory.get_important(0.8);
-    assert_eq!(important.len(), 1);
-    assert!(important[0].event.contains("battle"));
+    // Verify memory component exists
+    let has_memory = world.get::<&components::Memory>(npc).is_ok();
+    assert!(has_memory);
 }
-
-

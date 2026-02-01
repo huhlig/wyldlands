@@ -14,78 +14,77 @@
 // limitations under the License.
 //
 
-use crate::auth::AuthManager;
-use crate::banner::BannerManager;
+use crate::RpcClientManager;
+//use crate::auth::AuthManager;
 use crate::pool::ConnectionPool;
-use crate::session::{store::SessionStore, manager::SessionManager};
-use crate::rpc_client::RpcClientManager;
+use crate::properties::PropertiesManager;
+use crate::session::manager::SessionManager;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 /// Server context containing shared resources
 #[derive(Clone)]
 pub struct ServerContext {
-    /// Database connection pool
-    pub database: sqlx::postgres::PgPool,
-    
+    /// When did the gateway Startup
+    pub startup_time: SystemTime,
+
     /// Session manager for tracking sessions
     pub session_manager: Arc<SessionManager>,
-    
+
     /// Connection pool for managing active connections
     pub connection_pool: Arc<ConnectionPool>,
-    
+
     /// Authentication manager
-    pub auth_manager: Arc<AuthManager>,
-    
+    //  pub auth_manager: Arc<AuthManager>,
+
     /// Banner manager
-    pub banner_manager: Arc<BannerManager>,
-    
+    pub banner_manager: Arc<PropertiesManager>,
+
     /// RPC client for server communication
     pub rpc_client: Arc<RpcClientManager>,
 }
 
 impl ServerContext {
     /// Create a new server context
-    pub fn new(
-        database: sqlx::postgres::PgPool,
-        session_timeout_seconds: i64,
-        rpc_client: Arc<RpcClientManager>,
-    ) -> Self {
-        let store = SessionStore::new(database.clone());
-        let session_manager = Arc::new(SessionManager::new(store, session_timeout_seconds));
+    pub fn new(session_timeout_seconds: i64, rpc_client: Arc<RpcClientManager>) -> Self {
+        let session_manager = Arc::new(SessionManager::new(session_timeout_seconds));
         let connection_pool = Arc::new(ConnectionPool::new(Arc::clone(&session_manager)));
-        let auth_manager = Arc::new(AuthManager::new(database.clone()));
-        let banner_manager = Arc::new(BannerManager::new(database.clone(), 300)); // 5 min cache
-        
+        //let auth_manager = Arc::new(AuthManager::new(Arc::clone(&rpc_client)));
+        let banner_manager = Arc::new(PropertiesManager::new(Arc::clone(&rpc_client), 300)); // 5 min cache
+
         Self {
-            database,
+            startup_time: SystemTime::now(),
             session_manager,
             connection_pool,
-            auth_manager,
+            //            auth_manager,
             banner_manager,
             rpc_client,
         }
     }
-    
+
+    /// Get Gateway Uptime
+    pub fn gateway_uptime(&self) -> Duration {
+        self.startup_time.elapsed().unwrap()
+    }
+
     /// Get the session manager
     pub fn session_manager(&self) -> &Arc<SessionManager> {
         &self.session_manager
     }
-    
+
     /// Get the connection pool
     pub fn connection_pool(&self) -> &Arc<ConnectionPool> {
         &self.connection_pool
     }
-    
+
     /// Get the authentication manager
-    pub fn auth_manager(&self) -> &Arc<AuthManager> {
-        &self.auth_manager
-    }
-    
+    //pub fn auth_manager(&self) -> &Arc<AuthManager> { &self.auth_manager    }
+
     /// Get the banner manager
-    pub fn banner_manager(&self) -> &Arc<BannerManager> {
+    pub fn properties_manager(&self) -> &Arc<PropertiesManager> {
         &self.banner_manager
     }
-    
+
     /// Get the RPC client
     pub fn rpc_client(&self) -> &Arc<RpcClientManager> {
         &self.rpc_client

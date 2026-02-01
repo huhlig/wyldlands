@@ -28,15 +28,15 @@ mod npc;
 mod query;
 mod score;
 
+use crate::account::AccountRole;
 use crate::ecs::EcsEntity;
-use crate::ecs::components::{Avatar, Commandable, Combatant, Location};
+use crate::ecs::components::{Avatar, Combatant, Commandable, Location};
 use crate::ecs::context::WorldContext;
 use crate::ecs::events::{EventBus, GameEvent};
 use hecs::Entity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use wyldlands_common::account::AccountRole;
 
 pub type CommandFn = Box<
     dyn Fn(
@@ -350,7 +350,7 @@ impl CommandSystem {
             // - Item-specific commands (e.g., "read" only with readable items)
             // - Quest-specific commands
             // - Time-of-day specific commands
-            
+
             // Skip commands that require a higher role than the user has
             if let Some(required_role) = metadata.required_role {
                 if !user_role.has_permission(required_role) {
@@ -489,7 +489,6 @@ impl CommandSystem {
     }
 
     /// Register default commands
-    /// TODO: Add Enter Command
     fn register_default_commands(&mut self) {
         // Look command - enhanced to show room details
         self.register_command(
@@ -928,7 +927,6 @@ impl CommandSystem {
     }
 
     /// Register all movement commands
-    /// TODO: Add Run Command
     fn register_movement_commands(&mut self) {
         // North
         self.register_command(
@@ -1180,21 +1178,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: Fix test"]
-    fn test_look_command() {
-        unimplemented!();
-
-        // let mut world = GameWorld::new();
-        // let event_bus = EventBus::new();
-        // let mut system = CommandSystem::new(event_bus);
-
-        // let entity = world.spawn((Name::new("Player"), Location::new(1, 1)));
-
-        // let result = system.execute(&mut world, entity, "look", &[]);
-        // assert!(matches!(result, CommandResult::Success(_)));
-    }
-
-    #[test]
     #[ignore = "Requires WorldEngineContext - convert to integration test"]
     fn test_inventory_command() {
         // TODO: Convert to integration test with proper WorldEngineContext
@@ -1274,8 +1257,7 @@ mod tests {
 
     #[test]
     #[ignore = "Requires WorldEngineContext - convert to integration test"]
-    fn test_subcommand_vs_regular_command() {
-    }
+    fn test_subcommand_vs_regular_command() {}
 
     #[test]
     fn test_available_command_struct() {

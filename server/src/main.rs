@@ -19,7 +19,7 @@ use sqlx::Executor;
 use std::net::SocketAddr;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
-use wyldlands_common::proto::gateway_server_server::GatewayServerServer;
+use wyldlands_common::proto::{GatewayManagementServer, SessionToWorldServer};
 use wyldlands_server::config::{Arguments, Configuration};
 use wyldlands_server::listener::ServerRpcHandler;
 
@@ -110,7 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start gRPC server
     Server::builder()
-        .add_service(GatewayServerServer::new(handler))
+        .add_service(GatewayManagementServer::new(handler.clone()))
+        .add_service(SessionToWorldServer::new(handler))
         .serve(listen_addr)
         .await?;
 

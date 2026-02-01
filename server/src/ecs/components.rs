@@ -20,9 +20,8 @@
 //! Components are pure data structures that can be attached to entities.
 
 mod ai;
-mod character;
+pub mod character;
 mod combat;
-mod goap;
 mod identity;
 mod interaction;
 mod npc;
@@ -33,11 +32,8 @@ mod spatial;
 pub use ai::*;
 pub use character::*;
 pub use combat::*;
-pub use goap::*;
 pub use identity::*;
 pub use interaction::*;
 pub use npc::*;
 pub use persistence::*;
 pub use spatial::*;
-
-

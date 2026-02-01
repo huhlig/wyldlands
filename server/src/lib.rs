@@ -14,11 +14,13 @@
 // limitations under the License.
 //
 
+pub mod account;
 pub mod config;
 pub mod ecs;
 pub mod listener;
-pub mod llm;
+pub mod models;
 pub mod persistence;
+pub mod session;
 
 #[cfg(test)]
 mod tests {

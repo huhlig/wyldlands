@@ -92,13 +92,25 @@ cargo run --release --bin gateway
 
 ## Architecture
 
-Wyldlands uses a distributed architecture:
+Wyldlands uses a **layered state machine architecture** with distributed components:
 
 - **Gateway**: Handles client connections (WebSocket, Telnet), session management, and protocol translation
+  - Protocol-independent state management (Unauthenticated, Authenticated, Disconnected)
+  - Input mode handling (Playing, Editing)
+  - Side channel support (MSDP, GMCP, WebSocket JSON)
 - **World Server**: Runs game logic using an Entity Component System (ECS)
+  - Game-level state management (Authentication, CharacterSelection, CharacterCreation, Playing, Editing)
+  - Command routing and execution
+  - Entity and component management
 - **PostgreSQL**: Stores persistent session and world data
 
-Communication between gateway and world server uses gRPC.
+Communication between gateway and world server uses bidirectional gRPC with a unified `SendInput` RPC for all commands.
+
+**Key Benefits:**
+- Clean separation of connection-level and game-level concerns
+- Protocol independence - easy to add new protocols
+- Simplified server logic - no protocol-specific code
+- Independent testing of each layer
 
 ## Development
 

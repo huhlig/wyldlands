@@ -97,13 +97,14 @@ fn extract_uuid_from_result(result: &CommandResult) -> String {
 }
 
 /// Helper function to move builder to a specific room
+#[allow(dead_code)]
 async fn move_builder_to_room(
     context: &std::sync::Arc<WorldContext>,
     builder: EcsEntity,
     room_uuid: &str,
 ) {
     let room_uuid = uuid::Uuid::parse_str(room_uuid).expect("Invalid room UUID");
-    let mut world = context.entities().write().await;
+    let world = context.entities().write().await;
 
     // Find the room entity
     let mut room_entity = None;
@@ -1992,5 +1993,3 @@ async fn test_area_delete_with_rooms_fails() {
         _ => panic!("Expected failure when deleting area with rooms"),
     }
 }
-
-

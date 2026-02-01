@@ -14,23 +14,28 @@
 // limitations under the License.
 //
 
-//! Wyldlands Gateway - Connection and session management for the MUD server
+//! Wyldlands Gateway Library
+//!
+//! This library provides the core functionality for the Wyldlands gateway server,
+//! including session management, connection pooling, and protocol adapters.
 
-pub mod admin;
-pub mod auth;
-pub mod avatar;
-pub mod banner;
+//pub mod auth;
+pub mod properties;
 pub mod config;
-pub mod connection;
 pub mod context;
+pub mod grpc;
 pub mod pool;
 pub mod protocol;
 pub mod reconnection;
-pub mod rpc_client;
-pub mod rpc_server;
+pub mod server;
 pub mod session;
-pub mod shell;
-pub mod telnet;
-pub mod webapp;
-pub mod websocket;
+
+// Re-export commonly used types
+pub use context::ServerContext;
+pub use grpc::{GatewayRpcServer, RpcClientManager};
+pub use pool::ConnectionPool;
+pub use protocol::msdp;
+pub use reconnection::{ReconnectionManager, ReconnectionToken};
+pub use session::{GatewaySession, ProtocolType, SessionState};
+
 

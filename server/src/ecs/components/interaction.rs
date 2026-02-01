@@ -40,7 +40,7 @@ impl Commandable {
             max_queue_size: 10,
         }
     }
-    
+
     /// Queue a command for execution
     pub fn queue_command(&mut self, command: String, args: Vec<String>) -> bool {
         if self.command_queue.len() >= self.max_queue_size {
@@ -53,7 +53,7 @@ impl Commandable {
         });
         true
     }
-    
+
     /// Get the next command from the queue
     pub fn next_command(&mut self) -> Option<QueuedCommand> {
         if self.command_queue.is_empty() {
@@ -90,7 +90,7 @@ impl Interactable {
             interactions: Vec::new(),
         }
     }
-    
+
     /// Add an interaction
     pub fn add_interaction(&mut self, verb: String, description: String) {
         self.interactions.push(Interaction {
@@ -99,7 +99,7 @@ impl Interactable {
             requires_item: None,
         });
     }
-    
+
     /// Get all available interactions
     pub fn get_interactions(&self) -> &[Interaction] {
         &self.interactions
@@ -115,7 +115,7 @@ impl Default for Interactable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_commandable_queue() {
         let mut cmd = Commandable::new();
@@ -123,25 +123,23 @@ mod tests {
         assert!(cmd.next_command().is_some());
         assert!(cmd.next_command().is_none());
     }
-    
+
     #[test]
     fn test_commandable_max_queue() {
         let mut cmd = Commandable::new();
         cmd.max_queue_size = 2;
-        
+
         assert!(cmd.queue_command("cmd1".into(), vec![]));
         assert!(cmd.queue_command("cmd2".into(), vec![]));
         assert!(!cmd.queue_command("cmd3".into(), vec![]));
     }
-    
+
     #[test]
     fn test_interactable() {
         let mut inter = Interactable::new();
         inter.add_interaction("pull".into(), "Pull the lever".into());
-        
+
         assert_eq!(inter.get_interactions().len(), 1);
         assert_eq!(inter.get_interactions()[0].verb, "pull");
     }
 }
-
-

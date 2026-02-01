@@ -14,8 +14,8 @@
 // limitations under the License.
 //
 
+use serde::{Deserialize, Deserializer};
 use std::net::SocketAddr;
-use serde::{Deserializer, Deserialize};
 
 pub fn deserialize_socketaddr<'de, D>(deserializer: D) -> Result<SocketAddr, D::Error>
 where

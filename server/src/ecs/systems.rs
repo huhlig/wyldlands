@@ -19,21 +19,19 @@
 //! This module contains all system implementations that operate on components.
 //! Systems contain the game logic and behavior.
 
-mod movement;
+mod actions;
+mod combat;
 mod command;
 mod inventory;
-mod combat;
+mod movement;
 mod npc_ai;
-mod actions;
 pub mod persistence;
 
 // Re-export all systems
-pub use movement::*;
+pub use actions::*;
+pub use combat::*;
 pub use command::*;
 pub use inventory::*;
-pub use combat::*;
+pub use movement::*;
 pub use npc_ai::*;
-pub use actions::*;
 pub use persistence::*;
-
-

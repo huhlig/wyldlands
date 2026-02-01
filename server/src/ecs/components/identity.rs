@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Note: Only the UUID is serialized since the ECS entity handle is transient.
 /// The entity handle must be restored from the EntityRegistry after deserialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct EntityId {
     /// Runtime ECS entity handle (transient, changes on restart)
     #[serde(skip)]
@@ -60,9 +60,7 @@ impl EntityId {
     pub fn set_entity(&mut self, entity: hecs::Entity) {
         self.entity = entity;
     }
-}
 
-impl EntityId {
     /// Create a new EntityId from an ECS entity and UUID
     pub fn new(entity: hecs::Entity, uuid: uuid::Uuid) -> Self {
         Self { entity, uuid }
@@ -97,6 +95,26 @@ impl std::fmt::Display for EntityId {
     }
 }
 
+impl PartialEq for EntityId {
+    fn eq(&self, other: &Self) -> bool {
+        self.uuid == other.uuid
+    }
+}
+
+impl PartialOrd for EntityId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for EntityId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.uuid.cmp(&other.uuid)
+    }
+}
+
+impl Eq for EntityId {}
+
 /// Unique identifier for entities that need persistence
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EntityUuid(pub uuid::Uuid);
@@ -130,15 +148,13 @@ impl Name {
         let keywords = vec![display.to_lowercase()];
         Self { display, keywords }
     }
-    
+
     /// Add custom keywords for matching
     pub fn with_keywords(mut self, keywords: Vec<String>) -> Self {
-        self.keywords = keywords.into_iter()
-            .map(|k| k.to_lowercase())
-            .collect();
+        self.keywords = keywords.into_iter().map(|k| k.to_lowercase()).collect();
         self
     }
-    
+
     /// Check if this name matches a given keyword
     pub fn matches(&self, keyword: &str) -> bool {
         let keyword = keyword.to_lowercase();
@@ -163,12 +179,12 @@ impl Description {
             long: long.into(),
         }
     }
-    
+
     /// Get the short description
     pub fn get_short(&self) -> &str {
         &self.short
     }
-    
+
     /// Get the long description
     pub fn get_long(&self) -> &str {
         &self.long
@@ -193,12 +209,12 @@ impl Avatar {
             available: true,
         }
     }
-    
+
     /// Check if avatar is available for play
     pub fn is_available(&self) -> bool {
         self.available
     }
-    
+
     /// Enable or disable the avatar
     pub fn set_available(&mut self, available: bool) {
         self.available = available;
@@ -249,8 +265,11 @@ mod tests {
 
     #[test]
     fn test_name_matching() {
-        let name = Name::new("Rusty Sword")
-            .with_keywords(vec!["rusty".into(), "sword".into(), "blade".into()]);
+        let name = Name::new("Rusty Sword").with_keywords(vec![
+            "rusty".into(),
+            "sword".into(),
+            "blade".into(),
+        ]);
 
         assert!(name.matches("rus"));
         assert!(name.matches("sword"));
@@ -269,12 +288,10 @@ mod tests {
     fn test_description() {
         let desc = Description::new(
             "A rusty sword",
-            "This is a long, detailed description of a rusty sword."
+            "This is a long, detailed description of a rusty sword.",
         );
 
         assert_eq!(desc.get_short(), "A rusty sword");
         assert!(desc.get_long().contains("detailed"));
     }
 }
-
-

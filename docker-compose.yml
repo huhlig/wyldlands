@@ -1,16 +1,20 @@
 services:
   # PostgreSQL Database
-  postgres:
-    image: postgres:16-alpine
-    container_name: wyldlands-db
+  database:
+    build:
+      dockerfile: database/Dockerfile
+      tags:
+        - wyldlands/database:latest
+        - wyldlands/database:pv18-age170-vec081
+    container_name: wyldlands-database
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - database_data:/var/lib/postgresql
       - ./migrations/001_table_setup.sql:/docker-entrypoint-initdb.d/001_table_setup.sql
       - ./migrations/002_settings_data.sql:/docker-entrypoint-initdb.d/002_settings_data.sql
       - ./migrations/003_world_data.sql:/docker-entrypoint-initdb.d/003_world_data.sql
@@ -28,14 +32,17 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      tags:
+        - wyldlands/server:latest
+        - wyldlands/server:local
     container_name: wyldlands-server
     environment:
-      WYLDLANDS_DATABASE_URL: postgres://postgres:postgres@wyldlands-db:5432/postgres
+      WYLDLANDS_DATABASE_URL: postgres://postgres:postgres@wyldlands-database:5432/postgres
       WYLDLANDS_LISTENER_ADDR: 0.0.0.0:6006
       WYLDLANDS_AUTH_KEY: wyldlands-docker-auth-key
       RUST_LOG: debug
     depends_on:
-      postgres:
+      database:
         condition: service_healthy
     networks:
       - wyldlands
@@ -46,9 +53,12 @@ services:
     build:
       context: .
       dockerfile: gateway/Dockerfile
+      tags:
+        - wyldlands/gateway:latest
+        - wyldlands/gateway:local
     container_name: wyldlands-gateway
     environment:
-      WYLDLANDS_DATABASE_URL: postgres://postgres:postgres@wyldlands-db:5432/postgres
+      WYLDLANDS_DATABASE_URL: postgres://postgres:postgres@wyldlands-database:5432/postgres
       WYLDLANDS_TELNET_ADDR: 0.0.0.0:4000
       WYLDLANDS_WEBSOCKET_ADDR: 0.0.0.0:8080
       WYLDLANDS_SERVER_ADDR: wyldlands-server:6006
@@ -58,7 +68,7 @@ services:
       - "4000:4000"  # Telnet
       - "8080:8080"  # WebSocket/HTTP
     depends_on:
-      postgres:
+      database:
         condition: service_healthy
       server:
         condition: service_started
@@ -67,7 +77,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  postgres_data:
+  database_data:
     driver: local
 
 networks:

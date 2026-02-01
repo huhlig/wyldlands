@@ -18,18 +18,18 @@
 
 use crate::ecs::components::*;
 use crate::ecs::context::WorldContext;
-use crate::llm::{LlmManager, LLMMessage, LLMRequest};
+use crate::models::{LLMMessage, LLMRequest, ModelManager};
 use hecs::Entity;
 use std::sync::Arc;
 
 /// NPC AI system for updating NPC behavior
 pub struct NpcAiSystem {
-    llm_manager: Arc<LlmManager>,
+    llm_manager: Arc<ModelManager>,
 }
 
 impl NpcAiSystem {
     /// Create a new NPC AI system
-    pub fn new(llm_manager: Arc<LlmManager>) -> Self {
+    pub fn new(llm_manager: Arc<ModelManager>) -> Self {
         Self { llm_manager }
     }
 
@@ -264,7 +264,7 @@ impl NpcAiSystem {
         // Send to LLM
         let response = if let Some(provider) = &dialogue_config.llm_provider {
             self.llm_manager
-                .complete_with_provider(provider, request)
+                .complete_with_llm_provider(provider, request)
                 .await
         } else {
             self.llm_manager.complete(request).await
@@ -273,7 +273,7 @@ impl NpcAiSystem {
         match response {
             Ok(resp) => {
                 // Update conversation history
-                let mut world = context.entities().write().await;
+                let world = context.entities().read().await;
                 if let Ok(mut conv) = world.get::<&mut NpcConversation>(npc_entity) {
                     conv.add_message(player_uuid, player_uuid, message);
                     conv.add_message(player_uuid, npc_uuid, resp.content.clone());
@@ -297,11 +297,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_npc_ai_system_creation() {
-        let llm_manager = Arc::new(LlmManager::new());
+        // TODO: Implement Tests
+        let llm_manager = Arc::new(ModelManager::new());
         let system = NpcAiSystem::new(llm_manager);
         // System should be created successfully
         assert!(true);
     }
 }
-
-

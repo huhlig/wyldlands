@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wyldlands Gateway Admin</title>
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <header>
+        <h1>Wyldlands Gateway Admin Dashboard</h1>
+        <div id="health-status">Gateway Health: <span id="health-value">Checking...</span></div>
+    </header>
+
+    <main>
+        <div class="dashboard-grid">
+            <section id="stats-section" class="panel">
+                <h2>Statistics</h2>
+                <div class="stats-cards">
+                    <div class="stat-card">
+                        <label>Total Sessions</label>
+                        <span id="total-sessions" class="value">-</span>
+                    </div>
+                    <div class="stat-card">
+                        <label>Uptime</label>
+                        <span id="uptime" class="value">-</span>
+                    </div>
+                    <div class="stat-card">
+                        <label>Memory Usage</label>
+                        <span id="memory-usage" class="value">-</span>
+                    </div>
+                </div>
+                
+                <div class="sub-panel">
+                    <h3>Sessions by State</h3>
+                    <div id="state-distribution" class="chart-placeholder"></div>
+                </div>
+
+                <div class="sub-panel">
+                    <h3>Connections by Protocol</h3>
+                    <ul id="protocol-list"></ul>
+                </div>
+            </section>
+
+            <section id="sessions-section" class="panel">
+                <h2>Active Sessions</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>State</th>
+                                <th>Protocol</th>
+                                <th>Client Address</th>
+                                <th>Activity</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sessions-list">
+                            <!-- Sessions will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="actions-section" class="panel">
+                <h2>Actions</h2>
+                <div class="action-group">
+                    <h3>Broadcast Message</h3>
+                    <textarea id="broadcast-msg" placeholder="Enter message to all users..."></textarea>
+                    <button onclick="sendBroadcast()" class="btn-primary">Send to All</button>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer>
+        <p>&copy; 2026 Wyldlands Project</p>
+    </footer>
+
+    <script src="admin.js"></script>
+</body>
+</html>

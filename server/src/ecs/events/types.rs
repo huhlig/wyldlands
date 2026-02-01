@@ -40,8 +40,8 @@ pub enum GameEvent {
     // Movement
     EntityMoved {
         entity: EcsEntity,
-        from: (uuid::Uuid, uuid::Uuid),  // (area_id, room_id)
-        to: (uuid::Uuid, uuid::Uuid),    // (area_id, room_id)
+        from: (uuid::Uuid, uuid::Uuid), // (area_id, room_id)
+        to: (uuid::Uuid, uuid::Uuid),   // (area_id, room_id)
     },
     EntityEnteredRoom {
         entity: EcsEntity,
@@ -166,5 +166,3 @@ mod tests {
         }
     }
 }
-
-

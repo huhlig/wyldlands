@@ -1,0 +1,7 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║              Welcome to Wyldlands MUD Server                 ║
+║                                                              ║
+║  A text-based multiplayer adventure game built with Rust     ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝

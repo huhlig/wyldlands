@@ -185,17 +185,20 @@ fn get_component_types(world: &GameWorld, entity: EcsEntity) -> Vec<String> {
     if world.get::<&Avatar>(entity).is_ok() {
         components.push("Avatar");
     }
-    if world.get::<&BodyAttributes>(entity).is_ok() {
+    if world.get::<&BodyAttributeScores>(entity).is_ok() {
         components.push("BodyAttributes");
     }
-    if world.get::<&MindAttributes>(entity).is_ok() {
+    if world.get::<&MindAttributeScores>(entity).is_ok() {
         components.push("MindAttributes");
     }
-    if world.get::<&SoulAttributes>(entity).is_ok() {
+    if world.get::<&SoulAttributeScores>(entity).is_ok() {
         components.push("SoulAttributes");
     }
     if world.get::<&Skills>(entity).is_ok() {
         components.push("Skills");
+    }
+    if world.get::<&Talents>(entity).is_ok() {
+        components.push("Talents");
     }
     if world.get::<&Combatant>(entity).is_ok() {
         components.push("Combatant");
@@ -403,73 +406,76 @@ pub async fn query_entity_command(
     }
 
     // BodyAttributes
-    if let Ok(body) = world.get::<&BodyAttributes>(target_entity) {
-        output.push_str(&format!(
-            "\r\n  BodyAttributes:\r\n    Offence: {}\r\n",
-            body.score_offence
-        ));
-        output.push_str(&format!("    Finesse: {}\r\n", body.score_finesse));
-        output.push_str(&format!("    Defence: {}\r\n", body.score_defence));
+    if let Ok(body) = world.get::<&BodyAttributeScores>(target_entity) {
+        output.push_str("\r\n  Body Attributes:\r\n");
+        output.push_str(&format!("    Offence: {}\r\n", body.0.score_offence));
+        output.push_str(&format!("    Finesse: {}\r\n", body.0.score_finesse));
+        output.push_str(&format!("    Defence: {}\r\n", body.0.score_defence));
         output.push_str(&format!(
             "    Health: {}/{} (regen: {})\r\n",
-            body.health_current, body.health_maximum, body.health_regen
+            body.0.health_current, body.0.health_maximum, body.0.health_regen
         ));
         output.push_str(&format!(
             "    Energy: {}/{} (regen: {})\r\n",
-            body.energy_current, body.energy_maximum, body.energy_regen
+            body.0.energy_current, body.0.energy_maximum, body.0.energy_regen
         ));
     }
 
     // MindAttributes
-    if let Ok(mind) = world.get::<&MindAttributes>(target_entity) {
-        output.push_str(&format!(
-            "\r\n  MindAttributes:\r\n    Offence: {}\r\n",
-            mind.score_offence
-        ));
-        output.push_str(&format!("    Finesse: {}\r\n", mind.score_finesse));
-        output.push_str(&format!("    Defence: {}\r\n", mind.score_defence));
+    if let Ok(mind) = world.get::<&MindAttributeScores>(target_entity) {
+        output.push_str("\r\n  Mind Attributes:\r\n");
+        output.push_str(&format!("    Offence: {}\r\n", mind.0.score_offence));
+        output.push_str(&format!("    Finesse: {}\r\n", mind.0.score_finesse));
+        output.push_str(&format!("    Defence: {}\r\n", mind.0.score_defence));
         output.push_str(&format!(
             "    Health: {}/{} (regen: {})\r\n",
-            mind.health_current, mind.health_maximum, mind.health_regen
+            mind.0.health_current, mind.0.health_maximum, mind.0.health_regen
         ));
         output.push_str(&format!(
             "    Energy: {}/{} (regen: {})\r\n",
-            mind.energy_current, mind.energy_maximum, mind.energy_regen
+            mind.0.energy_current, mind.0.energy_maximum, mind.0.energy_regen
         ));
     }
 
     // SoulAttributes
-    if let Ok(soul) = world.get::<&SoulAttributes>(target_entity) {
-        output.push_str(&format!(
-            "\r\n  SoulAttributes:\r\n    Offence: {}\r\n",
-            soul.score_offence
-        ));
-        output.push_str(&format!("    Finesse: {}\r\n", soul.score_finesse));
-        output.push_str(&format!("    Defence: {}\r\n", soul.score_defence));
+    if let Ok(soul) = world.get::<&SoulAttributeScores>(target_entity) {
+        output.push_str("\r\n  SoulAttributes:\r\n");
+        output.push_str(&format!("    Offence: {}\r\n", soul.0.score_offence));
+        output.push_str(&format!("    Finesse: {}\r\n", soul.0.score_finesse));
+        output.push_str(&format!("    Defence: {}\r\n", soul.0.score_defence));
         output.push_str(&format!(
             "    Health: {}/{} (regen: {})\r\n",
-            soul.health_current, soul.health_maximum, soul.health_regen
+            soul.0.health_current, soul.0.health_maximum, soul.0.health_regen
         ));
         output.push_str(&format!(
             "    Energy: {}/{} (regen: {})\r\n",
-            soul.energy_current, soul.energy_maximum, soul.energy_regen
+            soul.0.energy_current, soul.0.energy_maximum, soul.0.energy_regen
         ));
     }
 
     // Skills
     if let Ok(skills) = world.get::<&Skills>(target_entity) {
         output.push_str("\r\n  Skills:\r\n");
-        if skills.skills.is_empty() {
+        if skills.is_empty() {
             output.push_str("    (none)\r\n");
         } else {
-            for (skill_id, skill) in &skills.skills {
-                let level = skills.level(*skill_id);
+            for (skill, level, experience, knowledge) in skills.iter() {
                 output.push_str(&format!(
-                    "    {}: Level {} (exp: {}, knowledge: {})\r\n",
-                    skill_id.to_string(),
-                    level,
-                    skill.experience,
-                    skill.knowledge
+                    "    {skill}: Level {level} (exp: {experience}, knowledge: {knowledge})\r\n",
+                ));
+            }
+        }
+    }
+
+    // Skills
+    if let Ok(talents) = world.get::<&Talents>(target_entity) {
+        output.push_str("\r\n  Talents:\r\n");
+        if talents.is_empty() {
+            output.push_str("    (none)\r\n");
+        } else {
+            for (talent, rank, experience) in talents.iter() {
+                output.push_str(&format!(
+                    "    {talent}: Rank {rank} (exp: {experience})\r\n",
                 ));
             }
         }
@@ -2098,7 +2104,7 @@ pub async fn room_edit_command(
             drop(world);
 
             // Update the room's area
-            let mut world = context.entities().write().await;
+            let world = context.entities().read().await;
             let result = if let Ok(mut room) = world.get::<&mut Room>(room_entity) {
                 room.area_id = EntityId::from_uuid(new_area_uuid);
                 CommandResult::Success(format!("Room moved to area {}", new_area_uuid))
@@ -2167,7 +2173,10 @@ pub async fn room_delete_bulk_command(
         let mut world = context.entities().write().await;
         for (room_entity, room_uuid) in &room_entities {
             let _ = world.despawn(*room_entity);
-            context.delete_entity(*room_uuid).await;
+            context
+                .delete_entity(*room_uuid)
+                .await
+                .expect("Failed to delete room");
         }
     }
 
@@ -2219,7 +2228,7 @@ pub async fn exit_edit_command(
 
     // Edit the exit
     let result = {
-        let mut world = context.entities().write().await;
+        let world = context.entities().read().await;
         let result = if let Ok(mut exits) = world.get::<&mut Exits>(current_room_entity) {
             // Find the exit
             if let Some(exit) = exits
@@ -2587,7 +2596,7 @@ pub async fn item_edit_command(
         "name" => {
             let value = value_args.join(" ");
             let result = {
-                let mut world = context.entities().write().await;
+                let world = context.entities().read().await;
                 let result = match world.get::<&mut Name>(item_entity) {
                     Ok(mut name) => {
                         name.display = value.clone();
@@ -2604,7 +2613,7 @@ pub async fn item_edit_command(
         "description" => {
             let value = value_args.join(" ");
             let result = {
-                let mut world = context.entities().write().await;
+                let world = context.entities().read().await;
                 let result = match world.get::<&mut Description>(item_entity) {
                     Ok(mut desc) => {
                         desc.long = value.clone();
@@ -2627,7 +2636,7 @@ pub async fn item_edit_command(
             match value_args[0].parse::<f32>() {
                 Ok(weight) => {
                     let result = {
-                        let mut world = context.entities().write().await;
+                        let world = context.entities().read().await;
                         let result = match world.get::<&mut Containable>(item_entity) {
                             Ok(mut containable) => {
                                 containable.weight = weight;
@@ -3417,8 +3426,6 @@ fn find_entity_by_uuid(world: &crate::ecs::GameWorld, uuid: uuid::Uuid) -> Optio
     }
     None
 }
-
-
 
 // ============================================================================
 // Unit Tests

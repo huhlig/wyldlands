@@ -17,7 +17,7 @@
 //! Combat command handlers
 
 use crate::ecs::EcsEntity;
-use crate::ecs::components::{BodyAttributes, Combatant, Location, Name, StatusEffects};
+use crate::ecs::components::{AttributeScores, Combatant, Location, Name, StatusEffects};
 use crate::ecs::context::WorldContext;
 use crate::ecs::events::EventBus;
 use crate::ecs::systems::CombatSystem;
@@ -214,7 +214,7 @@ pub async fn handle_combat_status(
     }
 
     // Show health
-    if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+    if let Ok(attrs) = world.get::<&AttributeScores>(entity) {
         status.push_str(&format!(
             "Health: {:.0}/{:.0}\n",
             attrs.health_current, attrs.health_maximum
@@ -248,10 +248,7 @@ pub async fn handle_combat_status(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ecs::GameWorld;
-    use crate::ecs::components::EntityUuid;
-
+    // TODO: Write comprehensive tests for combat commands
     #[test]
     fn test_combat_commands_exist() {
         // Simple test to verify the module compiles
@@ -259,5 +256,3 @@ mod tests {
         assert!(true);
     }
 }
-
-

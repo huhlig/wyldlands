@@ -154,7 +154,7 @@ message CancelCommand {}
 message CharacterCreationCommandResponse {
   bool success = 1;
   optional CharacterBuilderState state = 2;
-  optional string entity_id = 3;
+  optional string entity_uuid = 3;  // UUID as string (persistent identifier)
   optional string error = 4;
   optional string message = 5;
 }
@@ -350,8 +350,8 @@ pub struct CharacterCreationResponse {
     /// Current character builder state (if applicable)
     pub state: Option<CharacterBuilderState>,
     
-    /// Created entity ID (for Finalize command)
-    pub entity_id: Option<PersistentEntityId>,
+    /// Created entity UUID (for Finalize command) - persistent identifier
+    pub entity_uuid: Option<uuid::Uuid>,
     
     /// Error message (if unsuccessful)
     pub error: Option<String>,
@@ -786,7 +786,7 @@ async fn character_creation_command(
                     Ok(CharacterCreationResponse {
                         success: true,
                         state: Some(state),
-                        entity_id: None,
+                        entity_uuid: None,
                         error: None,
                         message: Some(format!("Modified {} by {}", attribute.name(), delta)),
                     })
@@ -794,7 +794,7 @@ async fn character_creation_command(
                 Err(e) => Ok(CharacterCreationResponse {
                     success: false,
                     state: Some(builder.to_state()),
-                    entity_id: None,
+                    entity_uuid: None,
                     error: Some(e),
                     message: None,
                 }),
@@ -814,7 +814,7 @@ async fn character_creation_command(
                     Ok(CharacterCreationResponse {
                         success: true,
                         state: Some(state),
-                        entity_id: None,
+                        entity_uuid: None,
                         error: None,
                         message: Some(format!("{} talent: {}", action, talent.name())),
                     })
@@ -822,7 +822,7 @@ async fn character_creation_command(
                 Err(e) => Ok(CharacterCreationResponse {
                     success: false,
                     state: Some(builder.to_state()),
-                    entity_id: None,
+                    entity_uuid: None,
                     error: Some(e),
                     message: None,
                 }),
@@ -841,7 +841,7 @@ async fn character_creation_command(
                     Ok(CharacterCreationResponse {
                         success: true,
                         state: Some(state),
-                        entity_id: None,
+                        entity_uuid: None,
                         error: None,
                         message: Some(format!("Modified skill {} by {}", skill_name, delta)),
                     })
@@ -849,7 +849,7 @@ async fn character_creation_command(
                 Err(e) => Ok(CharacterCreationResponse {
                     success: false,
                     state: Some(builder.to_state()),
-                    entity_id: None,
+                    entity_uuid: None,
                     error: Some(e),
                     message: None,
                 }),
@@ -868,7 +868,7 @@ async fn character_creation_command(
             Ok(CharacterCreationResponse {
                 success: true,
                 state: Some(state),
-                entity_id: None,
+                entity_uuid: None,
                 error: None,
                 message: Some(format!("Set starting location: {}", location_id)),
             })
@@ -883,7 +883,7 @@ async fn character_creation_command(
             Ok(CharacterCreationResponse {
                 success: true,
                 state: Some(builder.to_state()),
-                entity_id: None,
+                entity_uuid: None,
                 error: None,
                 message: None,
             })
@@ -913,13 +913,14 @@ async fn character_creation_command(
             // For now, return placeholder
             tracing::info!("Finalizing character creation for session {}", session_id);
             
-            // TODO: Implement actual character creation
-            let entity_id = "placeholder-entity-id".to_string();
+            // TODO: Implement actual character creation from ServerCharacterBuilder
+            // This will create ECS entity with EntityUuid component and register in EntityRegistry
+            let entity_uuid = uuid::Uuid::new_v4(); // Placeholder - actual creation will generate this
             
             Ok(CharacterCreationResponse {
                 success: true,
                 state: None,
-                entity_id: Some(entity_id),
+                entity_uuid: Some(entity_uuid),
                 error: None,
                 message: Some("Character created successfully!".to_string()),
             })
@@ -934,7 +935,7 @@ async fn character_creation_command(
             Ok(CharacterCreationResponse {
                 success: true,
                 state: None,
-                entity_id: None,
+                entity_uuid: None,
                 error: None,
                 message: Some("Character creation cancelled".to_string()),
             })
@@ -1044,11 +1045,8 @@ LoginState::AvatarCreationBuilder { account, state } => {
                 match self.send_character_command(CharacterCreationCommand::Finalize).await {
                     Ok(response) => {
                         if response.success {
-                            if let Some(entity_id) = response.entity_id {
-                                // Parse entity_id and link avatar
-                                let entity_uuid = uuid::Uuid::parse_str(&entity_id)
-                                    .map_err(|e| format!("Invalid entity ID: {}", e))?;
-                                
+                            if let Some(entity_uuid) = response.entity_uuid {
+                                // Link avatar using the UUID returned from server
                                 let avatar = self.context
                                     .auth_manager()
                                     .link_avatar(account.id, entity_uuid)

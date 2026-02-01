@@ -14,10 +14,12 @@
 // limitations under the License.
 //
 
-use crate::ecs::components::EntityId;
-use crate::ecs::registry::EntityRegistry;
 use crate::ecs::EcsEntity;
-use crate::llm::LlmManager;
+use crate::ecs::components::{CharacterBuilder, EntityId};
+use crate::ecs::events::EventBus;
+use crate::ecs::registry::EntityRegistry;
+use crate::ecs::systems::CommandSystem;
+use crate::models::ModelManager;
 use crate::persistence::PersistenceManager;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -93,30 +95,42 @@ pub struct WorldContext {
     entities: Arc<RwLock<hecs::World>>,
     registry: Arc<RwLock<EntityRegistry>>,
     persistence_manager: Arc<PersistenceManager>,
-    llm_manager: Arc<LlmManager>,
+    llm_manager: Arc<ModelManager>,
+    command_system: Arc<RwLock<CommandSystem>>,
+    event_bus: EventBus,
 }
 
 impl WorldContext {
     /// Create a new world engine context
     pub fn new(persistence_manager: Arc<PersistenceManager>) -> Self {
+        let event_bus = EventBus::new();
+        let command_system = CommandSystem::new(event_bus.clone());
+
         Self {
             entities: Arc::new(RwLock::new(hecs::World::new())),
             registry: Arc::new(RwLock::new(EntityRegistry::new())),
             persistence_manager,
-            llm_manager: Arc::new(LlmManager::new()),
+            llm_manager: Arc::new(ModelManager::new()),
+            command_system: Arc::new(RwLock::new(command_system)),
+            event_bus,
         }
     }
-    
+
     /// Create a new world engine context with a custom LLM manager
     pub fn with_llm_manager(
         persistence_manager: Arc<PersistenceManager>,
-        llm_manager: Arc<LlmManager>,
+        llm_manager: Arc<ModelManager>,
     ) -> Self {
+        let event_bus = EventBus::new();
+        let command_system = CommandSystem::new(event_bus.clone());
+
         Self {
             entities: Arc::new(RwLock::new(hecs::World::new())),
             registry: Arc::new(RwLock::new(EntityRegistry::new())),
             persistence_manager,
             llm_manager,
+            command_system: Arc::new(RwLock::new(command_system)),
+            event_bus,
         }
     }
 
@@ -138,10 +152,20 @@ impl WorldContext {
     pub fn persistence(&self) -> &Arc<PersistenceManager> {
         &self.persistence_manager
     }
-    
+
     /// Get the LLM manager
-    pub fn llm_manager(&self) -> &Arc<LlmManager> {
+    pub fn llm_manager(&self) -> &Arc<ModelManager> {
         &self.llm_manager
+    }
+
+    /// Get the command system - use only when you need manual lock management
+    pub fn command_system(&self) -> &Arc<RwLock<CommandSystem>> {
+        &self.command_system
+    }
+
+    /// Get the event bus
+    pub fn event_bus(&self) -> &EventBus {
+        &self.event_bus
     }
 
     // ============================================================================
@@ -238,7 +262,9 @@ impl WorldContext {
     /// Register a mapping between an ECS entity and its UUID
     pub async fn register_entity(&self, entity: EcsEntity, uuid: Uuid) {
         let mut registry = self.registry.write().await;
-        registry.register(entity, uuid);
+        registry
+            .register(entity, uuid)
+            .expect("Failed to register entity in registry");
     }
 
     /// Unregister an entity from the registry
@@ -337,19 +363,29 @@ impl WorldContext {
             .await
     }
 
-    /// Create a new character in the database
+    /// Create a new default character in the database
     ///
     /// This creates the entity record, links it to an account, and sets up
     /// initial components like name and description.
-    pub async fn create_character(
+    pub async fn create_character(&self, account_id: Uuid, name: &str) -> Result<Uuid, String> {
+        self.create_character_with_builder(
+            account_id,
+            &CharacterBuilder::new(name.to_string(), 0, 0),
+        )
+        .await
+    }
+
+    /// Create a new character in the database with a Default Sheet
+    ///
+    /// This creates the entity record, links it to an account, and sets up
+    /// initial components like name and description.
+    pub async fn create_character_with_builder(
         &self,
         account_id: Uuid,
-        name: String,
-        description_short: String,
-        description_long: String,
+        builder: &CharacterBuilder,
     ) -> Result<Uuid, String> {
         self.persistence_manager
-            .create_character(account_id, name, description_short, description_long)
+            .create_character_with_builder(account_id, builder)
             .await
     }
 
@@ -370,9 +406,7 @@ impl WorldContext {
         let registry = self.registry.read().await;
 
         if let Some(entity) = registry.get_entity(entity_id) {
-            self.persistence_manager
-                .save_entity(&world, entity)
-                .await
+            self.persistence_manager.save_entity(&world, entity).await
         } else {
             Err(format!("Entity {} not found in registry", entity_id))
         }

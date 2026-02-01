@@ -16,19 +16,24 @@
 
 //! Server RPC handler for gateway-to-server communication
 
-use crate::ecs::components::EntityId;
+use crate::ecs::components::{AttributeType, CharacterBuilder, EntityId, Skill, Talent};
 use crate::ecs::context::WorldContext;
-use crate::ecs::ServerCharacterBuilder;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use wyldlands_common::gateway::{
-    PersistentEntityId, SessionId,
-};
+use wyldlands_common::gateway::{PersistentEntityId, SessionId};
+use wyldlands_common::proto::game_output::OutputType;
 use wyldlands_common::proto::{
-    gateway_server_server::GatewayServer as GrpcGatewayServer,
-    *,
+    AuthenticateGatewayRequest, AuthenticateGatewayResponse, AuthenticateSessionRequest,
+    AuthenticateSessionResponse, CheckUsernameRequest, CheckUsernameResponse, CreateAccountRequest,
+    CreateAccountResponse, DataValue, EditResponse, Empty, GameOutput, GatewayHeartbeatRequest,
+    GatewayHeartbeatResponse, GatewayManagement, GatewayPropertiesRequest,
+    GatewayPropertiesResponse, SendInputRequest, SendInputResponse, ServerStatisticsRequest,
+    ServerStatisticsResponse, SessionDisconnectedRequest, SessionHeartbeatRequest,
+    SessionHeartbeatResponse, SessionReconnectedRequest, SessionReconnectedResponse,
+    SessionToWorld, StructuredOutput, TextOutput, game_output,
 };
 
 /// Server RPC handler
@@ -43,7 +48,7 @@ pub struct ServerRpcHandler {
     active_entities: Arc<RwLock<HashMap<SessionId, EntityId>>>,
 
     /// Character builders for sessions in character creation
-    character_builders: Arc<RwLock<HashMap<SessionId, ServerCharacterBuilder>>>,
+    character_builders: Arc<RwLock<HashMap<SessionId, CharacterBuilder>>>,
 
     /// World engine context (contains world, registry, and persistence)
     world_context: Arc<WorldContext>,
@@ -53,6 +58,9 @@ pub struct ServerRpcHandler {
 
     /// Whether this connection is authenticated
     authenticated: Arc<RwLock<bool>>,
+
+    /// Start time of the server handler
+    start_time: std::time::Instant,
 }
 
 /// Session state type for routing commands
@@ -74,8 +82,14 @@ struct SessionState {
     /// Whether the session is authenticated
     authenticated: bool,
 
+    /// The authenticated account ID (if any)
+    account_id: Option<uuid::Uuid>,
+
     /// The authenticated entity ID (if any)
     entity_id: Option<PersistentEntityId>,
+
+    /// Client IP address from gateway
+    client_addr: Option<String>,
 
     /// Queued events during disconnection
     queued_events: Vec<GameOutput>,
@@ -91,6 +105,7 @@ impl ServerRpcHandler {
             world_context,
             auth_key: auth_key.to_string(),
             authenticated: Arc::new(RwLock::new(false)),
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -105,7 +120,7 @@ impl ServerRpcHandler {
 // ============================================================================
 
 #[tonic::async_trait]
-impl GrpcGatewayServer for ServerRpcHandler {
+impl GatewayManagement for ServerRpcHandler {
     /// Authenticate the gateway connection
     async fn authenticate_gateway(
         &self,
@@ -134,27 +149,348 @@ impl GrpcGatewayServer for ServerRpcHandler {
         }))
     }
 
-    /// Authenticate a user session
-    async fn authenticate(
+    async fn fetch_gateway_properties(
         &self,
-        request: Request<AuthenticateRequest>,
-    ) -> Result<Response<AuthenticateResponse>, Status> {
+        request: Request<GatewayPropertiesRequest>,
+    ) -> Result<Response<GatewayPropertiesResponse>, Status> {
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
+
+        let keys = request.into_inner().properties;
+        let mut properties = HashMap::new();
+        // Load requested properties from database settings table in one go
+        match sqlx::query_scalar::<_, (String, String)>(
+            "SELECT key, value FROM wyldlands.settings WHERE key = ANY($1)",
+        )
+        .bind(&keys)
+        .fetch_all(self.world_context.persistence().database())
+        .await
+        {
+            Ok(rows) => {
+                for (key, value) in rows {
+                    properties.insert(key, value);
+                }
+                let missing_keys: Vec<&String> = keys
+                    .iter()
+                    .filter(|a| !properties.contains_key(*a))
+                    .collect();
+                if !missing_keys.is_empty() {
+                    tracing::warn!("Requested properties missing: {:?}", missing_keys);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load properties from database: {}", e);
+            }
+        }
+
+        Ok(Response::new(GatewayPropertiesResponse { properties }))
+    }
+
+    async fn fetch_server_statistics(
+        &self,
+        _request: Request<ServerStatisticsRequest>,
+    ) -> Result<Response<ServerStatisticsResponse>, Status> {
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
+
+        let mut statistics = HashMap::new();
+
+        // Server Uptime
+        let uptime = self.start_time.elapsed();
+        statistics.insert("uptime_seconds".to_string(), uptime.as_secs().to_string());
+
+        // Session Statistics
+        let sessions = self.sessions.read().await;
+        statistics.insert("active_sessions".to_string(), sessions.len().to_string());
+
+        let mut authenticated_sessions = 0;
+        let mut playing_sessions = 0;
+        for session in sessions.values() {
+            if session.authenticated {
+                authenticated_sessions += 1;
+            }
+            if session.state == SessionStateType::Playing {
+                playing_sessions += 1;
+            }
+        }
+        statistics.insert(
+            "authenticated_sessions".to_string(),
+            authenticated_sessions.to_string(),
+        );
+        statistics.insert("playing_sessions".to_string(), playing_sessions.to_string());
+
+        // Entity Statistics
+        let active_entities = self.active_entities.read().await;
+        statistics.insert("active_entities".to_string(), active_entities.len().to_string());
+
+        statistics.insert(
+            "world_entities".to_string(),
+            self.world_context.len().await.to_string(),
+        );
+        statistics.insert(
+            "dirty_entities".to_string(),
+            self.world_context.dirty_count().await.to_string(),
+        );
+
+        // Character Creation Statistics
+        let builders = self.character_builders.read().await;
+        statistics.insert(
+            "characters_in_creation".to_string(),
+            builders.len().to_string(),
+        );
+
+        Ok(Response::new(ServerStatisticsResponse { statistics }))
+    }
+
+    async fn check_username(
+        &self,
+        request: Request<CheckUsernameRequest>,
+    ) -> Result<Response<CheckUsernameResponse>, Status> {
         if !self.is_authenticated().await {
             return Err(Status::unauthenticated("Gateway not authenticated"));
         }
 
         let req = request.into_inner();
-        tracing::info!("gRPC: Authenticating session {} - user: {}", req.session_id, req.username);
+        tracing::debug!("Checking username availability: {}", req.username);
 
-        // TODO: Implement real authentication
-        // For now, accept any non-empty credentials
+        // Check if username exists in database
+        match self
+            .world_context
+            .persistence()
+            .username_exists(&req.username)
+            .await
+        {
+            Ok(exists) => Ok(Response::new(CheckUsernameResponse {
+                available: !exists,
+                error: None,
+            })),
+            Err(e) => {
+                tracing::error!("Database error checking username: {}", e);
+                Ok(Response::new(CheckUsernameResponse {
+                    available: false,
+                    error: Some(format!("Database error: {}", e)),
+                }))
+            }
+        }
+    }
+
+    async fn create_account(
+        &self,
+        request: Request<CreateAccountRequest>,
+    ) -> Result<Response<CreateAccountResponse>, Status> {
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
+
+        let req = request.into_inner();
+        tracing::info!("Creating account for username: {}", req.username);
+
+        // Validate input
         if req.username.is_empty() || req.password.is_empty() {
-            return Ok(Response::new(AuthenticateResponse {
+            return Ok(Response::new(CreateAccountResponse {
                 success: false,
-                account_id: None,
-                characters: vec![],
-                error: Some("Invalid credentials".to_string()),
+                account: None,
+                error: Some("Username and password are required".to_string()),
             }));
+        }
+
+        // Check if username already exists
+        match self
+            .world_context
+            .persistence()
+            .username_exists(&req.username)
+            .await
+        {
+            Ok(true) => {
+                return Ok(Response::new(CreateAccountResponse {
+                    success: false,
+                    account: None,
+                    error: Some("Username already exists".to_string()),
+                }));
+            }
+            Ok(false) => {
+                // Username is available, proceed with creation
+            }
+            Err(e) => {
+                tracing::error!("Database error checking username: {}", e);
+                return Ok(Response::new(CreateAccountResponse {
+                    success: false,
+                    account: None,
+                    error: Some("Database error".to_string()),
+                }));
+            }
+        }
+
+        // Create the account with hashed password
+        // Use username as display name if not provided in properties
+        let display_name = req
+            .properties
+            .get("display_name")
+            .cloned()
+            .unwrap_or_else(|| req.username.clone());
+        match self
+            .world_context
+            .persistence()
+            .create_account(&req.username, &display_name, &req.password)
+            .await
+        {
+            Ok(Some(account)) => {
+                tracing::info!(
+                    "Account created successfully: {} ({})",
+                    account.login,
+                    account.id
+                );
+
+                // Fetch the created account to return
+                match self
+                    .world_context
+                    .persistence()
+                    .get_account_by_id(account.id)
+                    .await
+                {
+                    Ok(account) => {
+                        let account_info = wyldlands_common::proto::AccountInfo {
+                            id: account.id.to_string(),
+                            login: account.login.clone(),
+                            active: account.active,
+                            role: account.role.to_string(),
+                            properties: std::collections::HashMap::new(),
+                        };
+
+                        Ok(Response::new(CreateAccountResponse {
+                            success: true,
+                            account: Some(account_info),
+                            error: None,
+                        }))
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to fetch created account: {}", e);
+                        Ok(Response::new(CreateAccountResponse {
+                            success: false,
+                            account: None,
+                            error: Some("Account created but failed to fetch details".to_string()),
+                        }))
+                    }
+                }
+            }
+            Ok(None) => {
+                tracing::error!("Failed to create account without error");
+                Ok(Response::new(CreateAccountResponse {
+                    success: false,
+                    account: None,
+                    error: Some(format!("Failed to create account without error")),
+                }))
+            }
+            Err(e) => {
+                tracing::error!("Failed to create account: {}", e);
+                Ok(Response::new(CreateAccountResponse {
+                    success: false,
+                    account: None,
+                    error: Some(format!("Failed to create account: {}", e)),
+                }))
+            }
+        }
+    }
+
+    /// Gateway-level heartbeat for connection health monitoring
+    async fn gateway_heartbeat(
+        &self,
+        request: Request<GatewayHeartbeatRequest>,
+    ) -> Result<Response<GatewayHeartbeatResponse>, Status> {
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
+
+        let req = request.into_inner();
+        tracing::debug!("gRPC: Gateway heartbeat from {}", req.gateway_id);
+
+        Ok(Response::new(GatewayHeartbeatResponse {
+            success: true,
+            error: None,
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl SessionToWorld for ServerRpcHandler {
+    /// Authenticate a user session
+    async fn authenticate_session(
+        &self,
+        request: Request<AuthenticateSessionRequest>,
+    ) -> Result<Response<AuthenticateSessionResponse>, Status> {
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
+
+        let req = request.into_inner();
+        tracing::info!(
+            "gRPC: Authenticating session {} - user: {}",
+            req.session_id,
+            req.username
+        );
+
+        // Validate input
+        if req.username.is_empty() || req.password.is_empty() {
+            return Ok(Response::new(AuthenticateSessionResponse {
+                success: false,
+                account: None,
+                error: Some("Username and password are required".to_string()),
+            }));
+        }
+
+        let account = match self
+            .world_context
+            .persistence()
+            .get_account_by_authentication(&req.username, &req.password)
+            .await
+        {
+            Ok(Some(account)) => {
+                if account.active {
+                    account
+                } else {
+                    tracing::warn!("Authentication failed: account {} disabled", req.username);
+                    return Ok(Response::new(AuthenticateSessionResponse {
+                        success: false,
+                        account: None,
+                        error: Some("Invalid username or password".to_string()),
+                    }));
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    "Authentication failed: account not found for {}",
+                    req.username
+                );
+                return Ok(Response::new(AuthenticateSessionResponse {
+                    success: false,
+                    account: None,
+                    error: Some("Invalid username or password".to_string()),
+                }));
+            }
+            Err(e) => {
+                tracing::error!("Database error during authentication: {}", e);
+                return Ok(Response::new(AuthenticateSessionResponse {
+                    success: false,
+                    account: None,
+                    error: Some("Authentication service error".to_string()),
+                }));
+            }
+        };
+
+        // Update last_login timestamp
+        if let Err(e) = self
+            .world_context
+            .persistence()
+            .update_last_login(account.id)
+            .await
+        {
+            tracing::warn!(
+                "Failed to update last_login for account {}: {}",
+                account.id,
+                e
+            );
         }
 
         // Create/update session state
@@ -164,60 +500,55 @@ impl GrpcGatewayServer for ServerRpcHandler {
             SessionState {
                 state: SessionStateType::Authenticated,
                 authenticated: true,
+                account_id: Some(account.id),
                 entity_id: None,
+                client_addr: if req.client_addr.is_empty() {
+                    None
+                } else {
+                    Some(req.client_addr.clone())
+                },
                 queued_events: Vec::new(),
             },
         );
 
-        // TODO: Load real characters from database
-        let mock_characters = vec![
-            wyldlands_common::proto::CharacterSummary {
-                entity_id: uuid::Uuid::new_v4().to_string(),
-                name: "Test Warrior".to_string(),
-                level: 5,
-                location: "Developer Hub".to_string(),
-            },
-        ];
+        // Convert account to protobuf AccountInfo
+        let account_info = wyldlands_common::proto::AccountInfo {
+            id: account.id.to_string(),
+            login: account.login.clone(),
+            active: account.active,
+            role: account.role.to_string(),
+            properties: HashMap::new(), // Account properties not yet implemented
+        };
 
-        Ok(Response::new(AuthenticateResponse {
+        tracing::info!(
+            "Session {} authenticated successfully as {} from {}",
+            req.session_id,
+            account.login,
+            req.client_addr
+        );
+
+        Ok(Response::new(AuthenticateSessionResponse {
             success: true,
-            account_id: Some(uuid::Uuid::new_v4().to_string()),
-            characters: mock_characters,
+            account: Some(account_info),
             error: None,
         }))
     }
 
-    /// Select a character for play
-    async fn select_character(
+    /// Send unified input (state machine based)
+    async fn send_input(
         &self,
-        request: Request<SelectCharacterRequest>,
-    ) -> Result<Response<SelectCharacterResponse>, Status> {
+        request: Request<SendInputRequest>,
+    ) -> Result<Response<SendInputResponse>, Status> {
         if !self.is_authenticated().await {
             return Err(Status::unauthenticated("Gateway not authenticated"));
         }
 
         let req = request.into_inner();
-        tracing::info!("gRPC: Selecting character {} for session {}", req.entity_id, req.session_id);
-
-        // TODO: Load character and create CharacterInfo
-        Ok(Response::new(SelectCharacterResponse {
-            success: true,
-            character: None, // TODO: Populate with real data
-            error: None,
-        }))
-    }
-
-    /// Send unified command (state machine based)
-    async fn send_command(
-        &self,
-        request: Request<SendCommandRequest>,
-    ) -> Result<Response<SendCommandResponse>, Status> {
-        if !self.is_authenticated().await {
-            return Err(Status::unauthenticated("Gateway not authenticated"));
-        }
-
-        let req = request.into_inner();
-        tracing::debug!("gRPC command from session {}: {}", req.session_id, req.command);
+        tracing::debug!(
+            "gRPC command from session {}: {}",
+            req.session_id,
+            req.command
+        );
 
         // Get session state
         let sessions = self.sessions.read().await;
@@ -230,38 +561,72 @@ impl GrpcGatewayServer for ServerRpcHandler {
 
         // Convert SessionStateType to protobuf SessionState enum
         let proto_state = match current_state {
-            SessionStateType::Unauthenticated => 1, // UNAUTHENTICATED
-            SessionStateType::Authenticated => 2,    // AUTHENTICATED
+            SessionStateType::Unauthenticated => 1,   // UNAUTHENTICATED
+            SessionStateType::Authenticated => 2,     // AUTHENTICATED
             SessionStateType::CharacterCreation => 3, // CHARACTER_CREATION
-            SessionStateType::Playing => 4,          // PLAYING
-            SessionStateType::Editing => 5,          // EDITING
+            SessionStateType::Playing => 4,           // PLAYING
+            SessionStateType::Editing => 5,           // EDITING
         };
 
         // Route based on state
         match current_state {
             SessionStateType::Authenticated => {
                 // Handle authenticated state commands (character selection, creation initiation)
-                self.handle_authenticated_command(req.session_id, req.command).await
+                self.handle_authenticated_command(req.session_id, req.command)
+                    .await
             }
             SessionStateType::CharacterCreation => {
                 // Handle character creation commands
-                self.handle_character_creation_command(req.session_id, req.command).await
+                self.handle_character_creation_command(req.session_id, req.command)
+                    .await
             }
             SessionStateType::Playing => {
                 // Handle gameplay commands
-                self.handle_playing_command(req.session_id, req.command).await
+                self.handle_playing_command(req.session_id, req.command)
+                    .await
             }
             _ => {
                 // Other states not yet implemented
-                Ok(Response::new(SendCommandResponse {
+                Ok(Response::new(SendInputResponse {
                     success: false,
                     output: vec![],
-                    error: Some(format!("Commands not implemented for state: {:?}", current_state)),
-                    session_state: proto_state,
-                    character_builder_state: None,
+                    error: Some(format!(
+                        "Commands not implemented for state: {:?}",
+                        current_state
+                    )),
                 }))
             }
         }
+    }
+
+    async fn finish_editing(
+        &self,
+        request: Request<EditResponse>,
+    ) -> Result<Response<Empty>, Status> {
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
+
+        let req = request.into_inner();
+
+        // Get the edited content
+        if let Some(content) = req.content {
+            tracing::info!("Received edited content ({} bytes)", content.len());
+
+            // TODO: In a full implementation, we would:
+            // 1. Look up the editing context from the session (what object/field was being edited)
+            // 2. Validate the content
+            // 3. Update the appropriate database record
+            // 4. Notify the session that editing is complete
+            // 5. Transition the session back to Playing state
+
+            // For now, we just log that we received the content
+            tracing::info!("Editing system: Content received and acknowledged");
+        } else {
+            tracing::info!("Editing cancelled (no content provided)");
+        }
+
+        Ok(Response::new(Empty {}))
     }
 
     /// Notify server of session disconnection
@@ -284,21 +649,58 @@ impl GrpcGatewayServer for ServerRpcHandler {
         &self,
         request: Request<SessionReconnectedRequest>,
     ) -> Result<Response<SessionReconnectedResponse>, Status> {
-        let req = request.into_inner();
-        tracing::info!("gRPC: Session {} reconnecting (old: {})", req.session_id, req.old_session_id);
+        if !self.is_authenticated().await {
+            return Err(Status::unauthenticated("Gateway not authenticated"));
+        }
 
-        // TODO: Implement reconnection logic
-        Ok(Response::new(SessionReconnectedResponse {
-            success: true,
-            error: None,
-        }))
+        let req = request.into_inner();
+        tracing::info!(
+            "gRPC: Session {} reconnecting (old: {})",
+            req.session_id,
+            req.old_session_id
+        );
+
+        // Transfer session state from old session to new session
+        let mut sessions = self.sessions.write().await;
+
+        if let Some(old_state) = sessions.remove(&req.old_session_id) {
+            // Transfer state to new session ID
+            sessions.insert(req.session_id.clone(), old_state.clone());
+
+            // Transfer active entity mapping if exists
+            let mut active_entities = self.active_entities.write().await;
+            if let Some(entity_id) = active_entities.remove(&req.old_session_id) {
+                active_entities.insert(req.session_id.clone(), entity_id);
+            }
+
+            // Transfer character builder if exists
+            let mut builders = self.character_builders.write().await;
+            if let Some(builder) = builders.remove(&req.old_session_id) {
+                builders.insert(req.session_id.clone(), builder);
+            }
+
+            tracing::info!("Session state transferred successfully");
+            Ok(Response::new(SessionReconnectedResponse {
+                success: true,
+                error: None,
+            }))
+        } else {
+            tracing::warn!(
+                "Old session {} not found for reconnection",
+                req.old_session_id
+            );
+            Ok(Response::new(SessionReconnectedResponse {
+                success: false,
+                error: Some("Old session not found".to_string()),
+            }))
+        }
     }
 
     /// Heartbeat to keep session alive
-    async fn heartbeat(
+    async fn session_heartbeat(
         &self,
-        request: Request<HeartbeatRequest>,
-    ) -> Result<Response<Empty>, Status> {
+        request: Request<SessionHeartbeatRequest>,
+    ) -> Result<Response<SessionHeartbeatResponse>, Status> {
         let req = request.into_inner();
         tracing::debug!("gRPC: Heartbeat from session {}", req.session_id);
 
@@ -308,22 +710,7 @@ impl GrpcGatewayServer for ServerRpcHandler {
             return Err(Status::not_found("Session not found"));
         }
 
-        Ok(Response::new(Empty {}))
-    }
-
-    /// Gateway-level heartbeat for connection health monitoring
-    async fn gateway_heartbeat(
-        &self,
-        request: Request<GatewayHeartbeatRequest>,
-    ) -> Result<Response<GatewayHeartbeatResponse>, Status> {
-        if !self.is_authenticated().await {
-            return Err(Status::unauthenticated("Gateway not authenticated"));
-        }
-
-        let req = request.into_inner();
-        tracing::debug!("gRPC: Gateway heartbeat from {}", req.gateway_id);
-
-        Ok(Response::new(GatewayHeartbeatResponse {
+        Ok(Response::new(SessionHeartbeatResponse {
             success: true,
             error: None,
         }))
@@ -344,29 +731,32 @@ impl ServerRpcHandler {
         &self,
         session_id: String,
         command: String,
-    ) -> Result<Response<SendCommandResponse>, Status> {
+    ) -> Result<Response<SendInputResponse>, Status> {
         let command = command.trim().to_lowercase();
         let mut output = Vec::new();
 
-        if command == "create character" || command == "create" || command == "new character" || command == "new" {
+        if command == "create character"
+            || command == "create"
+            || command == "new character"
+            || command == "new"
+        {
             // Initiate character creation
             tracing::info!("Session {} initiating character creation", session_id);
 
             // Prompt for character name
             output.push(GameOutput {
                 output_type: Some(game_output::OutputType::Text(TextOutput {
-                    content: "\r\n=== Character Creation ===\r\n\r\nEnter your character's name: ".to_string(),
+                    content: "\r\n=== Character Creation ===\r\n\r\nEnter your character's name: "
+                        .to_string(),
                 })),
             });
 
             // Transition to CharacterCreation state (will be done after name is provided)
             // For now, just acknowledge the command
-            Ok(Response::new(SendCommandResponse {
+            Ok(Response::new(SendInputResponse {
                 success: true,
                 output,
                 error: None,
-                session_state: 2, // Still AUTHENTICATED, will transition after name
-                character_builder_state: None,
             }))
         } else if command.starts_with("select ") || command.starts_with("play ") {
             // Handle character selection
@@ -379,61 +769,222 @@ impl ServerRpcHandler {
             if char_name.is_empty() {
                 output.push(GameOutput {
                     output_type: Some(game_output::OutputType::Text(TextOutput {
-                        content: "Usage: select <character_name> or play <character_name>".to_string(),
+                        content: "Usage: select <character_name> or play <character_name>"
+                            .to_string(),
                     })),
                 });
-                return Ok(Response::new(SendCommandResponse {
+                return Ok(Response::new(SendInputResponse {
                     success: false,
                     output,
                     error: Some("Character name required".to_string()),
-                    session_state: 2, // AUTHENTICATED
-                    character_builder_state: None,
                 }));
             }
 
-            // TODO: Implement character selection
-            output.push(GameOutput {
-                output_type: Some(game_output::OutputType::Text(TextOutput {
-                    content: format!("Character selection not yet implemented. Requested: {}", char_name),
-                })),
-            });
+            // Get account_id from session
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| Status::not_found("Session not found"))?;
+            let account_id = match session.account_id {
+                Some(id) => id,
+                None => {
+                    drop(sessions);
+                    output.push(GameOutput {
+                        output_type: Some(game_output::OutputType::Text(TextOutput {
+                            content: "Error: Not authenticated.".to_string(),
+                        })),
+                    });
+                    return Ok(Response::new(SendInputResponse {
+                        success: false,
+                        output,
+                        error: Some("Not authenticated".to_string()),
+                    }));
+                }
+            };
+            drop(sessions);
 
-            Ok(Response::new(SendCommandResponse {
-                success: false,
-                output,
-                error: Some("Not implemented".to_string()),
-                session_state: 2, // AUTHENTICATED
-                character_builder_state: None,
-            }))
-        } else if command == "list" || command == "characters" {
-            // List available characters
-            // TODO: Load from database
-            output.push(GameOutput {
-                output_type: Some(game_output::OutputType::Text(TextOutput {
-                    content: "Available characters:\r\n  (Character list not yet implemented)\r\n\r\nCommands:\r\n  create - Create a new character\r\n  select <name> - Select a character to play".to_string(),
-                })),
-            });
+            // Load character list and find matching character
+            match self
+                .world_context
+                .persistence()
+                .list_characters_for_account(account_id)
+                .await
+            {
+                Ok(avatars) => {
+                    // Find character by name (case-insensitive)
+                    let char_name_lower = char_name.to_lowercase();
+                    if let Some(avatar) = avatars
+                        .iter()
+                        .find(|c| c.display.to_lowercase() == char_name_lower)
+                    {
+                        // Load the character entity into the world
+                        match self.world_context.load_character(avatar.id).await {
+                            Ok(entity) => {
+                                // Get EntityId for the loaded character
+                                let entity_id =
+                                    self.world_context.get_entity_id(entity).await.ok_or_else(
+                                        || Status::internal("Failed to get entity ID"),
+                                    )?;
 
-            Ok(Response::new(SendCommandResponse {
-                success: true,
-                output,
-                error: None,
-                session_state: 2, // AUTHENTICATED
-                character_builder_state: None,
-            }))
+                                // Update session state to Playing
+                                let mut sessions = self.sessions.write().await;
+                                if let Some(session) = sessions.get_mut(&session_id) {
+                                    session.state = SessionStateType::Playing;
+                                    session.entity_id = Some(entity_id.uuid().to_string());
+                                }
+
+                                // Map session to active entity
+                                let mut active_entities = self.active_entities.write().await;
+                                active_entities.insert(session_id.clone(), entity_id);
+
+                                output.push(GameOutput {
+                                    output_type: Some(game_output::OutputType::Text(TextOutput {
+                                        content: format!("Welcome back, {}!\r\n", avatar.display),
+                                    })),
+                                });
+
+                                tracing::info!(
+                                    "Session {} selected character {}",
+                                    session_id,
+                                    avatar.display
+                                );
+
+                                Ok(Response::new(SendInputResponse {
+                                    success: true,
+                                    output,
+                                    error: None,
+                                }))
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to load character: {}", e);
+                                output.push(GameOutput {
+                                    output_type: Some(game_output::OutputType::Text(TextOutput {
+                                        content: format!("Error loading character: {}", e),
+                                    })),
+                                });
+
+                                Ok(Response::new(SendInputResponse {
+                                    success: false,
+                                    output,
+                                    error: Some(format!("Failed to load character: {}", e)),
+                                }))
+                            }
+                        }
+                    } else {
+                        output.push(GameOutput {
+                            output_type: Some(OutputType::Text(TextOutput {
+                                content: format!(
+                                    "Character '{}' not found. Use 'list' to see your characters.",
+                                    char_name
+                                ),
+                            })),
+                        });
+
+                        Ok(Response::new(SendInputResponse {
+                            success: false,
+                            output,
+                            error: Some("Character not found".to_string()),
+                        }))
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load character list: {}", e);
+                    output.push(GameOutput {
+                        output_type: Some(game_output::OutputType::Text(TextOutput {
+                            content: format!("Error loading character list: {}", e),
+                        })),
+                    });
+
+                    Ok(Response::new(SendInputResponse {
+                        success: false,
+                        output,
+                        error: Some(format!("Database error: {}", e)),
+                    }))
+                }
+            }
+        } else if command == "list" || command == "avatars" || command == "characters" {
+            // List available characters from database
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| Status::not_found("Session not found"))?;
+
+            let account_id = match session.account_id {
+                Some(id) => id,
+                None => {
+                    drop(sessions);
+                    output.push(GameOutput {
+                        output_type: Some(game_output::OutputType::Text(TextOutput {
+                            content: "Error: Not authenticated. Please log in first.".to_string(),
+                        })),
+                    });
+                    return Ok(Response::new(SendInputResponse {
+                        success: false,
+                        output,
+                        error: Some("Not authenticated".to_string()),
+                    }));
+                }
+            };
+            drop(sessions);
+
+            // Load characters from database
+            match self
+                .world_context
+                .persistence()
+                .list_characters_for_account(account_id)
+                .await
+            {
+                Ok(avatars) => {
+                    let mut content = String::from("=== Your Characters ===\r\n\r\n");
+
+                    if avatars.is_empty() {
+                        content.push_str("You have no characters yet.\r\n");
+                    } else {
+                        for avatar in avatars {
+                            content.push_str(&format!("  {}\r\n", avatar.display,));
+                        }
+                    }
+
+                    content.push_str("\r\nCommands:\r\n");
+                    content.push_str("  create - Create a new character\r\n");
+                    content.push_str("  select <name> - Select a character to play\r\n");
+
+                    output.push(GameOutput {
+                        output_type: Some(OutputType::Text(TextOutput { content })),
+                    });
+
+                    Ok(Response::new(SendInputResponse {
+                        success: true,
+                        output,
+                        error: None,
+                    }))
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load character list: {}", e);
+                    output.push(GameOutput {
+                        output_type: Some(OutputType::Text(TextOutput {
+                            content: format!("Error loading character list: {}", e),
+                        })),
+                    });
+
+                    Ok(Response::new(SendInputResponse {
+                        success: false,
+                        output,
+                        error: Some(format!("Database error: {}", e)),
+                    }))
+                }
+            }
         } else {
             output.push(GameOutput {
-                output_type: Some(game_output::OutputType::Text(TextOutput {
+                output_type: Some(OutputType::Text(TextOutput {
                     content: format!("Unknown command: {}\r\n\r\nAvailable commands:\r\n  create - Create a new character\r\n  select <name> - Select a character\r\n  list - List your characters", command),
                 })),
             });
 
-            Ok(Response::new(SendCommandResponse {
+            Ok(Response::new(SendInputResponse {
                 success: false,
                 output,
                 error: Some("Unknown command".to_string()),
-                session_state: 2, // AUTHENTICATED
-                character_builder_state: None,
             }))
         }
     }
@@ -447,14 +998,116 @@ impl ServerRpcHandler {
         &self,
         session_id: String,
         command: String,
-    ) -> Result<Response<SendCommandResponse>, Status> {
+    ) -> Result<Response<SendInputResponse>, Status> {
+        let command = command.trim();
+        let mut output = Vec::new();
+
+        // Handle finalize separately since it needs to drop the lock
+        if command == "create finalize" || command == "finalize" || command == "done" {
+            // Get and validate the builder
+            let builders = self.character_builders.read().await;
+            let builder = builders
+                .get(&session_id)
+                .ok_or_else(|| Status::not_found("Character builder not found for session"))?;
+
+            let validation_result = builder.validate();
+            let builder_clone = builder.clone();
+            drop(builders);
+
+            match validation_result {
+                Ok(()) => {
+                    // Character is valid, create it in the database
+                    // Get account_id from session
+                    let sessions = self.sessions.read().await;
+                    let session = sessions
+                        .get(&session_id)
+                        .ok_or_else(|| Status::not_found("Session not found"))?;
+                    let account_id = session
+                        .account_id
+                        .ok_or_else(|| Status::unauthenticated("Not authenticated"))?;
+                    drop(sessions);
+
+                    // Create character with full attributes, talents, and skills
+                    match self
+                        .world_context
+                        .persistence()
+                        .create_character_with_builder(account_id, &builder_clone)
+                        .await
+                    {
+                        Ok(character_uuid) => {
+                            tracing::info!(
+                                "Character {} created successfully with UUID {}",
+                                builder_clone.name,
+                                character_uuid
+                            );
+
+                            // Remove builder from session
+                            let mut builders = self.character_builders.write().await;
+                            builders.remove(&session_id);
+                            drop(builders);
+
+                            // Transition session back to Authenticated state
+                            let mut sessions = self.sessions.write().await;
+                            if let Some(session) = sessions.get_mut(&session_id) {
+                                session.state = SessionStateType::Authenticated;
+                            }
+                            drop(sessions);
+
+                            output.push(GameOutput {
+                                output_type: Some(game_output::OutputType::Text(TextOutput {
+                                    content: format!(
+                                        "Character {} created successfully!\r\n\r\nYou can now select this character with: select {}\r\n",
+                                        builder_clone.name, builder_clone.name
+                                    ),
+                                })),
+                            });
+
+                            return Ok(Response::new(SendInputResponse {
+                                success: true,
+                                output,
+                                error: None,
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to create character: {}", e);
+                            output.push(GameOutput {
+                                output_type: Some(game_output::OutputType::Text(TextOutput {
+                                    content: format!("Error: Failed to create character: {}", e),
+                                })),
+                            });
+
+                            return Ok(Response::new(SendInputResponse {
+                                success: false,
+                                output,
+                                error: Some(format!("Failed to create character: {}", e)),
+                            }));
+                        }
+                    }
+                }
+                Err(errors) => {
+                    output.push(GameOutput {
+                        output_type: Some(game_output::OutputType::Text(TextOutput {
+                            content: format!(
+                                "Error: Cannot finalize character:\n{}",
+                                errors.join("\n")
+                            ),
+                        })),
+                    });
+
+                    return Ok(Response::new(SendInputResponse {
+                        success: false,
+                        output,
+                        error: Some(format!("Cannot finalize character:\n{}", errors.join("\n"))),
+                    }));
+                }
+            }
+        }
+
+        // Handle other commands with write lock
         let mut builders = self.character_builders.write().await;
         let builder = builders
             .get_mut(&session_id)
             .ok_or_else(|| Status::not_found("Character builder not found for session"))?;
-
-        let command = command.trim();
-        let mut output = Vec::new();
 
         // Parse and execute command
         let result = if command.starts_with("attr ") {
@@ -469,21 +1122,9 @@ impl ServerRpcHandler {
         } else if command == "sheet" {
             let sheet = self.format_character_sheet(builder);
             output.push(GameOutput {
-                output_type: Some(game_output::OutputType::Text(TextOutput {
-                    content: sheet,
-                })),
+                output_type: Some(game_output::OutputType::Text(TextOutput { content: sheet })),
             });
             Ok("Character sheet displayed".to_string())
-        } else if command == "create finalize" {
-            match builder.validate() {
-                Ok(()) => {
-                    // TODO: Actually create the character entity
-                    Ok("Character creation finalized! (TODO: Create entity)".to_string())
-                }
-                Err(errors) => {
-                    Err(format!("Cannot finalize character:\n{}", errors.join("\n")))
-                }
-            }
         } else {
             Err(format!("Unknown character creation command: {}", command))
         };
@@ -506,26 +1147,19 @@ impl ServerRpcHandler {
             }
         }
 
-        // Convert builder state to protobuf
-        let builder_state = self.convert_builder_to_proto(builder);
-
-        Ok(Response::new(SendCommandResponse {
+        Ok(Response::new(SendInputResponse {
             success: result.is_ok(),
             output,
             error: result.err(),
-            session_state: 3, // CHARACTER_CREATION
-            character_builder_state: Some(builder_state),
         }))
     }
 
     /// Parse attribute modification command (e.g., "+BodyOffence", "-MindDefence")
     fn parse_attr_command(
         &self,
-        builder: &mut ServerCharacterBuilder,
+        builder: &mut CharacterBuilder,
         arg: &str,
     ) -> Result<String, String> {
-        use wyldlands_common::character::AttributeType;
-
         if arg.is_empty() {
             return Err("Usage: attr +<AttributeName> or attr -<AttributeName>".to_string());
         }
@@ -539,18 +1173,7 @@ impl ServerRpcHandler {
         };
 
         // Parse attribute type (case-insensitive)
-        let attr = match attr_name.to_lowercase().as_str() {
-            "bodyoffence" | "body_offence" | "bo" => AttributeType::BodyOffence,
-            "bodyfinesse" | "body_finesse" | "bf" => AttributeType::BodyFinesse,
-            "bodydefence" | "body_defence" | "bd" => AttributeType::BodyDefence,
-            "mindoffence" | "mind_offence" | "mo" => AttributeType::MindOffence,
-            "mindfinesse" | "mind_finesse" | "mf" => AttributeType::MindFinesse,
-            "minddefence" | "mind_defence" | "md" => AttributeType::MindDefence,
-            "souloffence" | "soul_offence" | "so" => AttributeType::SoulOffence,
-            "soulfinesse" | "soul_finesse" | "sf" => AttributeType::SoulFinesse,
-            "souldefence" | "soul_defence" | "sd" => AttributeType::SoulDefence,
-            _ => return Err(format!("Unknown attribute: {}", attr_name)),
-        };
+        let attr = AttributeType::from_str(attr_name)?;
 
         builder.modify_attribute(attr, delta)?;
         let new_value = builder.get_attribute(attr);
@@ -566,11 +1189,9 @@ impl ServerRpcHandler {
     /// Parse talent modification command (e.g., "+WeaponMaster", "-Berserker")
     fn parse_talent_command(
         &self,
-        builder: &mut ServerCharacterBuilder,
+        builder: &mut CharacterBuilder,
         arg: &str,
     ) -> Result<String, String> {
-        use wyldlands_common::character::Talent;
-
         if arg.is_empty() {
             return Err("Usage: talent +<TalentName> or talent -<TalentName>".to_string());
         }
@@ -585,36 +1206,7 @@ impl ServerRpcHandler {
 
         // Parse talent (case-insensitive, remove spaces)
         let talent_key = talent_name.to_lowercase().replace(" ", "");
-        let talent = match talent_key.as_str() {
-            "weaponmaster" => Talent::WeaponMaster,
-            "shieldexpert" => Talent::ShieldExpert,
-            "dualwielder" => Talent::DualWielder,
-            "berserker" => Talent::Berserker,
-            "tactician" => Talent::Tactician,
-            "spellweaver" => Talent::Spellweaver,
-            "elementalaffinity" => Talent::ElementalAffinity,
-            "arcanescholar" => Talent::ArcaneScholar,
-            "ritualist" => Talent::Ritualist,
-            "channeler" => Talent::Channeler,
-            "astralprojection" => Talent::AstralProjection,
-            "mastercraftsman" => Talent::MasterCraftsman,
-            "artificer" => Talent::Artificer,
-            "alchemist" => Talent::Alchemist,
-            "enchanter" => Talent::Enchanter,
-            "diplomat" => Talent::Diplomat,
-            "merchant" => Talent::Merchant,
-            "leader" => Talent::Leader,
-            "performer" => Talent::Performer,
-            "tracker" => Talent::Tracker,
-            "forager" => Talent::Forager,
-            "beastmaster" => Talent::BeastMaster,
-            "survivalist" => Talent::Survivalist,
-            "prodigy" => Talent::Prodigy,
-            "lucky" => Talent::Lucky,
-            "fastlearner" => Talent::FastLearner,
-            "resilient" => Talent::Resilient,
-            _ => return Err(format!("Unknown talent: {}", talent_name)),
-        };
+        let talent = Talent::from_str(talent_key.as_str())?;
 
         builder.modify_talent(talent, add)?;
         Ok(format!(
@@ -628,7 +1220,7 @@ impl ServerRpcHandler {
     /// Parse skill modification command (e.g., "+Swords", "-Archery")
     fn parse_skill_command(
         &self,
-        builder: &mut ServerCharacterBuilder,
+        builder: &mut CharacterBuilder,
         arg: &str,
     ) -> Result<String, String> {
         if arg.is_empty() {
@@ -647,9 +1239,10 @@ impl ServerRpcHandler {
         if skill_name.is_empty() {
             return Err("Skill name cannot be empty".to_string());
         }
+        let skill = Skill::from_str(skill_name.as_str())?;
 
-        builder.modify_skill(skill_name.clone(), delta)?;
-        let new_value = builder.get_skill(&skill_name);
+        builder.modify_skill_points(skill, delta)?;
+        let new_value = builder.get_skill_level(skill);
         Ok(format!(
             "{} {} to {}. Skill points remaining: {}",
             skill_name,
@@ -660,9 +1253,7 @@ impl ServerRpcHandler {
     }
 
     /// Format character sheet for display
-    fn format_character_sheet(&self, builder: &ServerCharacterBuilder) -> String {
-        use wyldlands_common::character::AttributeType;
-
+    fn format_character_sheet(&self, builder: &CharacterBuilder) -> String {
         let mut sheet = String::new();
         sheet.push_str(&format!("=== Character Sheet: {} ===\n\n", builder.name));
 
@@ -682,8 +1273,12 @@ impl ServerRpcHandler {
         if builder.talents.is_empty() {
             sheet.push_str("  None\n");
         } else {
-            for talent in &builder.talents {
-                sheet.push_str(&format!("  {} ({}pts)\n", talent.name(), talent.cost()));
+            for (talent, rank, exp) in builder.talents.iter() {
+                sheet.push_str(&format!(
+                    "  {} ({}pts)\n",
+                    talent.name(),
+                    talent.cost().unwrap_or(0)
+                ));
             }
         }
         sheet.push_str("\n");
@@ -694,9 +1289,8 @@ impl ServerRpcHandler {
             sheet.push_str("  None\n");
         } else {
             let mut skills: Vec<_> = builder.skills.iter().collect();
-            skills.sort_by_key(|(name, _)| *name);
-            for (name, rank) in skills {
-                sheet.push_str(&format!("  {}: {}\n", name, rank));
+            for (name, level, _experience, _knowledge) in skills {
+                sheet.push_str(&format!("  {}: {}\n", name, level));
             }
         }
         sheet.push_str(&format!(
@@ -727,10 +1321,8 @@ impl ServerRpcHandler {
         sheet
     }
 
-    /// Convert ServerCharacterBuilder to protobuf CharacterBuilderState
-    fn convert_builder_to_proto(&self, builder: &ServerCharacterBuilder) -> CharacterBuilderState {
-        use wyldlands_common::character::AttributeType;
-
+    /// Render ServerCharacterBuilder to GameOutput
+    fn convert_builder_to_proto(&self, builder: &CharacterBuilder) -> Vec<GameOutput> {
         // Convert attributes to map<string, int32>
         let mut attributes = HashMap::new();
         for attr in AttributeType::all() {
@@ -741,25 +1333,29 @@ impl ServerRpcHandler {
         let talents: Vec<String> = builder
             .talents
             .iter()
-            .map(|t| t.name().to_string())
+            .map(|(t, rank, exp)| t.name().to_string())
             .collect();
 
         // Skills are already HashMap<String, i32>
         let skills = builder.skills.clone();
+        let mut output = Vec::new();
 
-        CharacterBuilderState {
-            name: builder.name.clone(),
-            attributes,
-            talents,
-            skills,
-            attribute_talent_points: builder.attribute_talent_points,
-            skill_points: builder.skill_points,
-            max_attribute_talent_points: builder.max_attribute_talent_points,
-            max_skill_points: builder.max_skill_points,
-            starting_location_id: builder.starting_location_id.clone(),
-            validation_errors: builder.validation_errors(),
-            is_valid: builder.is_valid(),
-        }
+        // Text output placeholder for future character sheet rendering
+        output.push(GameOutput {
+            output_type: Some(OutputType::Text(TextOutput {
+                content: "".to_string(),
+            })),
+        });
+
+        // Structured output placeholder for future character sheet data
+        output.push(GameOutput {
+            output_type: Some(OutputType::Structured(StructuredOutput {
+                output_type: "charsheet".to_string(),
+                data: Some(DataValue { data_value: None }),
+            })),
+        });
+
+        output
     }
 
     // ========================================================================
@@ -771,7 +1367,7 @@ impl ServerRpcHandler {
         &self,
         session_id: String,
         command: String,
-    ) -> Result<Response<SendCommandResponse>, Status> {
+    ) -> Result<Response<SendInputResponse>, Status> {
         // Get the active entity for this session
         let active_entities = self.active_entities.read().await;
         let entity_id = active_entities
@@ -781,30 +1377,107 @@ impl ServerRpcHandler {
         let entity_id = entity_id.clone();
         drop(active_entities);
 
-        // TODO: Process command through ECS command system
-        // For now, return a placeholder response
-        let mut output = Vec::new();
-        output.push(GameOutput {
-            output_type: Some(game_output::OutputType::Text(TextOutput {
-                content: format!("Command received: {}\r\n(Command processing not yet implemented)", command),
-            })),
-        });
+        // Process command through ECS command system
+        // Parse command into command name and arguments
+        let parts: Vec<String> = command.split_whitespace().map(|s| s.to_string()).collect();
+        let (cmd_name, args) = if parts.is_empty() {
+            ("".to_string(), vec![])
+        } else {
+            (parts[0].clone(), parts[1..].to_vec())
+        };
 
-        Ok(Response::new(SendCommandResponse {
-            success: true,
-            output,
-            error: None,
-            session_state: 4, // PLAYING
-            character_builder_state: None,
-        }))
+        // Execute command through command system
+        let mut command_system = self.world_context.command_system().write().await;
+        let result = command_system
+            .execute(
+                self.world_context.clone(),
+                entity_id.entity(),
+                &cmd_name,
+                &args,
+            )
+            .await;
+        drop(command_system);
+
+        // Convert CommandResult to response
+        let mut output = Vec::new();
+        match result {
+            crate::ecs::systems::CommandResult::Success(msg) => {
+                output.push(GameOutput {
+                    output_type: Some(game_output::OutputType::Text(TextOutput { content: msg })),
+                });
+
+                Ok(Response::new(SendInputResponse {
+                    success: true,
+                    output,
+                    error: None,
+                }))
+            }
+            crate::ecs::systems::CommandResult::Failure(msg) => {
+                output.push(GameOutput {
+                    output_type: Some(game_output::OutputType::Text(TextOutput {
+                        content: msg.clone(),
+                    })),
+                });
+
+                Ok(Response::new(SendInputResponse {
+                    success: false,
+                    output,
+                    error: Some(msg),
+                }))
+            }
+            crate::ecs::systems::CommandResult::Invalid(msg) => {
+                output.push(GameOutput {
+                    output_type: Some(game_output::OutputType::Text(TextOutput {
+                        content: msg.clone(),
+                    })),
+                });
+
+                Ok(Response::new(SendInputResponse {
+                    success: false,
+                    output,
+                    error: Some(msg),
+                }))
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::context::WorldContext;
+    use crate::persistence::PersistenceManager;
+    use std::sync::Arc;
+    use tonic::Request;
+    use wyldlands_common::proto::{ServerStatisticsRequest, GatewayManagement};
 
-    // TODO: Write Tests
+    #[tokio::test]
+    async fn test_fetch_server_statistics() {
+        let persistence = Arc::new(PersistenceManager::new_mock());
+        let world_context = Arc::new(WorldContext::new(persistence));
+        let handler = ServerRpcHandler::new("test_key", world_context);
+
+        // Authenticate first
+        let auth_request = Request::new(AuthenticateGatewayRequest {
+            auth_key: "test_key".to_string(),
+        });
+        handler.authenticate_gateway(auth_request).await.unwrap();
+
+        let request = Request::new(ServerStatisticsRequest {
+            statistics: vec![],
+        });
+
+        let response = handler.fetch_server_statistics(request).await.unwrap();
+        let stats = response.into_inner().statistics;
+
+        assert!(stats.contains_key("uptime_seconds"));
+        assert!(stats.contains_key("active_sessions"));
+        assert!(stats.contains_key("active_entities"));
+        assert!(stats.contains_key("world_entities"));
+        assert!(stats.contains_key("dirty_entities"));
+        assert!(stats.contains_key("characters_in_creation"));
+        
+        assert_eq!(stats.get("active_sessions").unwrap(), "0");
+        assert_eq!(stats.get("world_entities").unwrap(), "0");
+    }
 }
-
-

@@ -85,7 +85,7 @@ pub async fn npc_create_command(
         // Add AI components
         builder.add(AIController::new(BehaviorType::Passive));
         builder.add(Personality::new());
-        builder.add(Memory::new());
+        builder.add(Memory);
 
         // Add GOAP planner
         builder.add(GoapPlanner::new());
@@ -152,7 +152,7 @@ pub async fn npc_list_command(
     let world = context.entities().read().await;
     let mut npcs = Vec::new();
 
-    for (e, uuid, name, npc, ai) in world
+    for (_e, uuid, name, npc, ai) in world
         .query::<(Entity, &EntityUuid, &Name, &Npc, &AIController)>()
         .iter()
     {
@@ -234,7 +234,7 @@ pub async fn npc_edit_command(
         None => return CommandResult::Failure("NPC not found".to_string()),
     };
 
-    let mut world = context.entities().write().await;
+    let world = context.entities().read().await;
 
     // Check if entity is an NPC
     if world.get::<&Npc>(npc_entity).is_err() {
@@ -330,7 +330,7 @@ pub async fn npc_dialogue_command(
         None => return CommandResult::Failure("NPC not found".to_string()),
     };
 
-    let mut world = context.entities().write().await;
+    let world = context.entities().read().await;
 
     let mut dialogue = match world.get::<&mut NpcDialogue>(npc_entity) {
         Ok(d) => d,
@@ -417,7 +417,7 @@ pub async fn npc_goap_command(
     }
 
     let subcommand = &args[1].to_lowercase();
-    let mut world = context.entities().write().await;
+    let world = context.entities().read().await;
 
     let mut planner = match world.get::<&mut GoapPlanner>(npc_entity) {
         Ok(p) => p,
@@ -494,5 +494,3 @@ pub async fn npc_goap_command(
         _ => CommandResult::Failure(format!("Unknown subcommand: {}\r\n", subcommand)),
     }
 }
-
-

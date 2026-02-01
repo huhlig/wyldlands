@@ -23,8 +23,8 @@
 //! The registry enables fast O(1) lookups in both directions, solving the
 //! identifier confusion problem in the codebase.
 
-use crate::ecs::components::EntityId;
 use crate::ecs::EcsEntity;
+use crate::ecs::components::EntityId;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -33,7 +33,7 @@ use uuid::Uuid;
 pub struct EntityRegistry {
     /// Map from UUID to ECS entity handle
     uuid_to_entity: HashMap<Uuid, EcsEntity>,
-    
+
     /// Map from ECS entity handle to UUID
     entity_to_uuid: HashMap<EcsEntity, Uuid>,
 }
@@ -46,7 +46,7 @@ impl EntityRegistry {
             entity_to_uuid: HashMap::new(),
         }
     }
-    
+
     /// Register a mapping between an ECS entity and its UUID
     ///
     /// # Arguments
@@ -64,14 +64,14 @@ impl EntityRegistry {
         if self.uuid_to_entity.contains_key(&uuid) {
             return Err(format!("UUID {} is already registered", uuid));
         }
-        
+
         // Register bidirectional mapping
         self.uuid_to_entity.insert(uuid, entity);
         self.entity_to_uuid.insert(entity, uuid);
-        
+
         Ok(())
     }
-    
+
     /// Unregister an entity by its ECS handle
     ///
     /// # Arguments
@@ -88,7 +88,7 @@ impl EntityRegistry {
             None
         }
     }
-    
+
     /// Unregister an entity by its UUID
     ///
     /// # Arguments
@@ -105,7 +105,7 @@ impl EntityRegistry {
             None
         }
     }
-    
+
     /// Look up an ECS entity by its UUID
     ///
     /// # Arguments
@@ -117,7 +117,7 @@ impl EntityRegistry {
     pub fn get_entity(&self, uuid: Uuid) -> Option<EcsEntity> {
         self.uuid_to_entity.get(&uuid).copied()
     }
-    
+
     /// Look up a UUID by its ECS entity
     ///
     /// # Arguments
@@ -129,38 +129,38 @@ impl EntityRegistry {
     pub fn get_uuid(&self, entity: EcsEntity) -> Option<Uuid> {
         self.entity_to_uuid.get(&entity).copied()
     }
-    
+
     /// Check if an entity is registered
     pub fn contains_entity(&self, entity: EcsEntity) -> bool {
         self.entity_to_uuid.contains_key(&entity)
     }
-    
+
     /// Check if a UUID is registered
     pub fn contains_uuid(&self, uuid: Uuid) -> bool {
         self.uuid_to_entity.contains_key(&uuid)
     }
-    
+
     /// Get the number of registered entities
     pub fn len(&self) -> usize {
         self.entity_to_uuid.len()
     }
-    
+
     /// Check if the registry is empty
     pub fn is_empty(&self) -> bool {
         self.entity_to_uuid.is_empty()
     }
-    
+
     /// Clear all registrations
     pub fn clear(&mut self) {
         self.uuid_to_entity.clear();
         self.entity_to_uuid.clear();
     }
-    
+
     /// Get all registered UUIDs
     pub fn uuids(&self) -> impl Iterator<Item = &Uuid> {
         self.uuid_to_entity.keys()
     }
-    
+
     /// Get all registered entities
     pub fn entities(&self) -> impl Iterator<Item = &EcsEntity> {
         self.entity_to_uuid.keys()
@@ -175,7 +175,8 @@ impl EntityRegistry {
     /// * `Some(EntityId)` - Combined entity/UUID identifier
     /// * `None` - If the entity is not registered
     pub fn get_entity_id(&self, entity: EcsEntity) -> Option<EntityId> {
-        self.get_uuid(entity).map(|uuid| EntityId::new(entity, uuid))
+        self.get_uuid(entity)
+            .map(|uuid| EntityId::new(entity, uuid))
     }
 
     /// Get an EntityId by UUID
@@ -187,7 +188,8 @@ impl EntityRegistry {
     /// * `Some(EntityId)` - Combined entity/UUID identifier
     /// * `None` - If the UUID is not registered
     pub fn get_entity_id_by_uuid(&self, uuid: Uuid) -> Option<EntityId> {
-        self.get_entity(uuid).map(|entity| EntityId::new(entity, uuid))
+        self.get_entity(uuid)
+            .map(|entity| EntityId::new(entity, uuid))
     }
 
     /// Get all EntityIds as an iterator
@@ -202,84 +204,84 @@ impl EntityRegistry {
 mod tests {
     use super::*;
     use crate::ecs::GameWorld;
-    
+
     #[test]
     fn test_register_and_lookup() {
         let mut registry = EntityRegistry::new();
         let mut world = GameWorld::new();
-        
+
         let entity = world.spawn(());
         let uuid = Uuid::new_v4();
-        
+
         // Register mapping
         assert!(registry.register(entity, uuid).is_ok());
-        
+
         // Lookup both directions
         assert_eq!(registry.get_entity(uuid), Some(entity));
         assert_eq!(registry.get_uuid(entity), Some(uuid));
     }
-    
+
     #[test]
     fn test_duplicate_registration() {
         let mut registry = EntityRegistry::new();
         let mut world = GameWorld::new();
-        
+
         let entity = world.spawn(());
         let uuid = Uuid::new_v4();
-        
+
         // First registration succeeds
         assert!(registry.register(entity, uuid).is_ok());
-        
+
         // Duplicate entity registration fails
         let uuid2 = Uuid::new_v4();
         assert!(registry.register(entity, uuid2).is_err());
-        
+
         // Duplicate UUID registration fails
         let entity2 = world.spawn(());
         assert!(registry.register(entity2, uuid).is_err());
     }
-    
+
     #[test]
     fn test_unregister() {
         let mut registry = EntityRegistry::new();
         let mut world = GameWorld::new();
-        
+
         let entity = world.spawn(());
         let uuid = Uuid::new_v4();
-        
+
         registry.register(entity, uuid).unwrap();
-        
+
         // Unregister by entity
         assert_eq!(registry.unregister_entity(entity), Some(uuid));
         assert_eq!(registry.get_entity(uuid), None);
         assert_eq!(registry.get_uuid(entity), None);
-        
+
         // Re-register
         registry.register(entity, uuid).unwrap();
-        
+
         // Unregister by UUID
         assert_eq!(registry.unregister_uuid(uuid), Some(entity));
         assert_eq!(registry.get_entity(uuid), None);
         assert_eq!(registry.get_uuid(entity), None);
     }
-    
+
     #[test]
     fn test_contains() {
         let mut registry = EntityRegistry::new();
         let mut world = GameWorld::new();
-        
+
         let entity = world.spawn(());
         let uuid = Uuid::new_v4();
-        
+
         assert!(!registry.contains_entity(entity));
         assert!(!registry.contains_uuid(uuid));
-        
+
         registry.register(entity, uuid).unwrap();
-        
+
         assert!(registry.contains_entity(entity));
         assert!(registry.contains_uuid(uuid));
     }
-    
+
     #[test]
     fn test_clear() {
         let mut registry = EntityRegistry::new();
@@ -348,8 +350,13 @@ mod tests {
         assert_eq!(ids.len(), 2);
 
         // Verify both entity IDs are present
-        assert!(ids.iter().any(|id| id.entity() == entity1 && id.uuid() == uuid1));
-        assert!(ids.iter().any(|id| id.entity() == entity2 && id.uuid() == uuid2));
+        assert!(
+            ids.iter()
+                .any(|id| id.entity() == entity1 && id.uuid() == uuid1)
+        );
+        assert!(
+            ids.iter()
+                .any(|id| id.entity() == entity2 && id.uuid() == uuid2)
+        );
     }
 }
-

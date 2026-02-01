@@ -16,11 +16,11 @@
 
 //! Help system for providing detailed information about commands, skills, talents, etc.
 
-use crate::ecs::context::WorldContext;
-use crate::ecs::EcsEntity;
-use wyldlands_common::account::AccountRole;
-use std::sync::Arc;
 use super::CommandResult;
+use crate::account::AccountRole;
+use crate::ecs::EcsEntity;
+use crate::ecs::context::WorldContext;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, sqlx::Type)]
 #[sqlx(type_name = "help_category", rename_all = "PascalCase")]
@@ -50,78 +50,94 @@ pub struct HelpTopic {
 }
 
 /// Get help topic from database
-fn get_help_topic(context: Arc<WorldContext>, keyword: &str, user_role: AccountRole) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<HelpTopic>> + Send + '_>> {
+fn get_help_topic(
+    context: Arc<WorldContext>,
+    keyword: &str,
+    user_role: AccountRole,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<HelpTopic>> + Send + '_>> {
     Box::pin(async move {
-    let keyword_lower = keyword.to_lowercase();
-    let db = context.persistence().database();
-    
-    // First try to find the topic directly
-    let result = sqlx::query_as::<_, (String, HelpCategory, String, String, Option<String>, Option<String>, Vec<String>, AccountRole)>(
-        "SELECT keyword, category, title, content, syntax, examples, see_also, min_role
+        let keyword_lower = keyword.to_lowercase();
+        let db = context.persistence().database();
+
+        // First try to find the topic directly
+        let result = sqlx::query_as::<
+            _,
+            (
+                String,
+                HelpCategory,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Vec<String>,
+                AccountRole,
+            ),
+        >(
+            "SELECT keyword, category, title, content, syntax, examples, see_also, min_role
          FROM wyldlands.help_topics
-         WHERE keyword = $1"
-    )
-    .bind(&keyword_lower)
-    .fetch_optional(db)
-    .await;
+         WHERE keyword = $1",
+        )
+        .bind(&keyword_lower)
+        .fetch_optional(db)
+        .await;
 
-    if let Ok(Some(row)) = result {
-        let (keyword, category, title, content, syntax, examples, see_also, min_role) = row;
-        
-        // Check if user has permission to view this help
-        if !user_role.has_permission(min_role) {
-            return None;
+        if let Ok(Some(row)) = result {
+            let (keyword, category, title, content, syntax, examples, see_also, min_role) = row;
+
+            // Check if user has permission to view this help
+            if !user_role.has_permission(min_role) {
+                return None;
+            }
+
+            return Some(HelpTopic {
+                keyword,
+                category,
+                title,
+                content,
+                syntax,
+                examples,
+                see_also,
+                min_role,
+            });
         }
-        
-        return Some(HelpTopic {
-            keyword,
-            category,
-            title,
-            content,
-            syntax,
-            examples,
-            see_also,
-            min_role,
-        });
-    }
 
-    // If not found, try to find an alias
-    let alias_result = sqlx::query_scalar::<_, String>(
-        "SELECT keyword FROM wyldlands.help_aliases WHERE alias = $1"
-    )
-    .bind(&keyword_lower)
-    .fetch_optional(db)
-    .await;
+        // If not found, try to find an alias
+        let alias_result = sqlx::query_scalar::<_, String>(
+            "SELECT keyword FROM wyldlands.help_aliases WHERE alias = $1",
+        )
+        .bind(&keyword_lower)
+        .fetch_optional(db)
+        .await;
 
-    if let Ok(Some(target_keyword)) = alias_result {
-        // Recursively get the actual help topic
-        return get_help_topic(context, &target_keyword, user_role).await;
-    }
+        if let Ok(Some(target_keyword)) = alias_result {
+            // Recursively get the actual help topic
+            return get_help_topic(context, &target_keyword, user_role).await;
+        }
 
-    None
+        None
     })
 }
 
 /// Format help topic for display
 fn format_help_topic(topic: &HelpTopic) -> String {
     let mut output = String::new();
-    
+
     output.push_str("\r\n");
     output.push_str("╔══════════════════════════════════════════════════════════════╗\r\n");
     output.push_str(&format!("║ {:^60} ║\r\n", topic.title));
     output.push_str("╚══════════════════════════════════════════════════════════════╝\r\n");
     output.push_str("\r\n");
-    
+
     // Category
     output.push_str(&format!("Category: {:?}\r\n\r\n", topic.category));
-    
+
     // Content
     for line in topic.content.lines() {
         output.push_str(line);
         output.push_str("\r\n");
     }
     output.push_str("\r\n");
-    
+
     // Syntax
     if let Some(syntax) = &topic.syntax {
         output.push_str("Syntax:\r\n");
@@ -132,7 +148,7 @@ fn format_help_topic(topic: &HelpTopic) -> String {
         }
         output.push_str("\r\n");
     }
-    
+
     // Examples
     if let Some(examples) = &topic.examples {
         output.push_str("Examples:\r\n");
@@ -143,14 +159,14 @@ fn format_help_topic(topic: &HelpTopic) -> String {
         }
         output.push_str("\r\n");
     }
-    
+
     // See also
     if !topic.see_also.is_empty() {
         output.push_str("See also: ");
         output.push_str(&topic.see_also.join(", "));
         output.push_str("\r\n");
     }
-    
+
     output
 }
 
@@ -163,7 +179,7 @@ pub async fn help_command(
 ) -> CommandResult {
     // Get the basic help topic
     let user_role = AccountRole::Player; // TODO: Get actual user role from entity/session
-    
+
     if let Some(topic) = get_help_topic(context, "help", user_role).await {
         CommandResult::Success(format_help_topic(&topic))
     } else {
@@ -176,7 +192,8 @@ pub async fn help_command(
                help commands     - List all available commands\r\n\
                help <keyword>    - Get detailed help about a specific topic\r\n\
              \r\n\
-             Try 'help commands' to see all available commands.\r\n".to_string()
+             Try 'help commands' to see all available commands.\r\n"
+                .to_string(),
         )
     }
 }
@@ -189,35 +206,39 @@ pub async fn help_commands_command(
     _args: Vec<String>,
 ) -> CommandResult {
     let user_role = AccountRole::Player; // TODO: Get actual user role from entity/session
-    
+
     // Get all command help topics from database
     let db = context.persistence().database();
     let result = sqlx::query_as::<_, (String, String, AccountRole)>(
         "SELECT keyword, title, min_role
          FROM wyldlands.help_topics
          WHERE category = 'Command'
-         ORDER BY min_role, keyword"
+         ORDER BY min_role, keyword",
     )
     .fetch_all(db)
     .await;
 
     match result {
         Ok(topics) => {
-            let mut output = String::from("\r\n╔══════════════════════════════════════════════════════════════╗\r\n");
+            let mut output = String::from(
+                "\r\n╔══════════════════════════════════════════════════════════════╗\r\n",
+            );
             output.push_str("║                      Available Commands                      ║\r\n");
-            output.push_str("╚══════════════════════════════════════════════════════════════╝\r\n\r\n");
-            
+            output.push_str(
+                "╚══════════════════════════════════════════════════════════════╝\r\n\r\n",
+            );
+
             let mut player_commands = Vec::new();
             let mut storyteller_commands = Vec::new();
             let mut builder_commands = Vec::new();
             let mut admin_commands = Vec::new();
-            
+
             for (keyword, title, min_role) in topics {
                 // Only show commands the user has permission to use
                 if !user_role.has_permission(min_role) {
                     continue;
                 }
-                
+
                 match min_role {
                     AccountRole::Player => player_commands.push((keyword, title)),
                     AccountRole::Storyteller => storyteller_commands.push((keyword, title)),
@@ -225,7 +246,7 @@ pub async fn help_commands_command(
                     AccountRole::Admin => admin_commands.push((keyword, title)),
                 }
             }
-            
+
             // Player commands
             if !player_commands.is_empty() {
                 output.push_str("Player Commands:\r\n");
@@ -234,7 +255,7 @@ pub async fn help_commands_command(
                 }
                 output.push_str("\r\n");
             }
-            
+
             // Storyteller commands
             if !storyteller_commands.is_empty() {
                 output.push_str("Storyteller Commands:\r\n");
@@ -243,7 +264,7 @@ pub async fn help_commands_command(
                 }
                 output.push_str("\r\n");
             }
-            
+
             // Builder commands
             if !builder_commands.is_empty() {
                 output.push_str("Builder Commands:\r\n");
@@ -252,7 +273,7 @@ pub async fn help_commands_command(
                 }
                 output.push_str("\r\n");
             }
-            
+
             // Admin commands
             if !admin_commands.is_empty() {
                 output.push_str("Admin Commands:\r\n");
@@ -261,9 +282,11 @@ pub async fn help_commands_command(
                 }
                 output.push_str("\r\n");
             }
-            
-            output.push_str("Use 'help <command>' for detailed information about a specific command.\r\n");
-            
+
+            output.push_str(
+                "Use 'help <command>' for detailed information about a specific command.\r\n",
+            );
+
             CommandResult::Success(output)
         }
         Err(e) => {
@@ -283,10 +306,10 @@ pub async fn help_keyword_command(
     if args.is_empty() {
         return CommandResult::Invalid("Usage: help <keyword>".to_string());
     }
-    
+
     let keyword = args[0].to_lowercase();
     let user_role = AccountRole::Player; // TODO: Get actual user role from entity/session
-    
+
     match get_help_topic(context, &keyword, user_role).await {
         Some(topic) => CommandResult::Success(format_help_topic(&topic)),
         None => CommandResult::Failure(format!(
@@ -319,7 +342,7 @@ mod tests {
             see_also: vec!["related".to_string()],
             min_role: AccountRole::Player,
         };
-        
+
         assert_eq!(topic.keyword, "test");
         assert_eq!(topic.title, "Test Topic");
     }
@@ -336,7 +359,7 @@ mod tests {
             see_also: vec!["help".to_string()],
             min_role: AccountRole::Player,
         };
-        
+
         let formatted = format_help_topic(&topic);
         assert!(formatted.contains("Test Command"));
         assert!(formatted.contains("This is a test command"));
@@ -345,5 +368,3 @@ mod tests {
         assert!(formatted.contains("See also:"));
     }
 }
-
-

@@ -51,9 +51,9 @@ VALUES ('banner.login',
         ', 'Login Banner', NOW(), NOW())
 ON CONFLICT (key) DO NOTHING;
 
--- Insert default disconnect message if none exists
+-- Insert default logout.txt message if none exists
 INSERT INTO wyldlands.settings (key, value, description, created_at, updated_at)
-VALUES ('banner.disconnect',
+VALUES ('banner.logout.txt',
         'Thank you for playing Wyldlands! Come back soon!
         ', 'Disconnection Banner', NOW(), NOW())
 ON CONFLICT (key) DO NOTHING;

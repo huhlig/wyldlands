@@ -20,8 +20,7 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use wyldlands_gateway::pool::ConnectionPool;
 use wyldlands_gateway::session::manager::SessionManager;
-use wyldlands_gateway::session::store::SessionStore;
-use wyldlands_gateway::session::{ProtocolType, Session, SessionState};
+use wyldlands_gateway::session::{AuthenticatedState, GatewaySession, ProtocolType, SessionState};
 
 /// Create a test database pool for benchmarking
 async fn create_bench_pool() -> sqlx::PgPool {
@@ -39,7 +38,7 @@ async fn create_bench_pool() -> sqlx::PgPool {
 fn bench_session_creation(c: &mut Criterion) {
     c.bench_function("session_new", |b| {
         b.iter(|| {
-            Session::new(
+            GatewaySession::new(
                 std::hint::black_box(ProtocolType::WebSocket),
                 std::hint::black_box("127.0.0.1:8080".to_string()),
             )
@@ -49,22 +48,21 @@ fn bench_session_creation(c: &mut Criterion) {
 
 /// Benchmark session state transitions
 fn bench_session_transitions(c: &mut Criterion) {
-    let mut session = Session::new(ProtocolType::Telnet, "127.0.0.1:23".to_string());
+    let mut session = GatewaySession::new(ProtocolType::Telnet, "127.0.0.1:23".to_string());
 
     c.bench_function("session_transition", |b| {
         b.iter(|| {
-            let _ = session.transition(std::hint::black_box(SessionState::Authenticating));
-            let _ = session.transition(std::hint::black_box(SessionState::CharacterSelection));
-            let _ = session.transition(std::hint::black_box(SessionState::Playing));
+            let _ = session.transition(std::hint::black_box(SessionState::Authenticated(
+                AuthenticatedState::Playing,
+            )));
             let _ = session.transition(std::hint::black_box(SessionState::Disconnected));
-            let _ = session.transition(std::hint::black_box(SessionState::Playing));
         });
     });
 }
 
 /// Benchmark session touch operation
 fn bench_session_touch(c: &mut Criterion) {
-    let mut session = Session::new(ProtocolType::WebSocket, "127.0.0.1:8080".to_string());
+    let mut session = GatewaySession::new(ProtocolType::WebSocket, "127.0.0.1:8080".to_string());
 
     c.bench_function("session_touch", |b| {
         b.iter(|| {
@@ -75,7 +73,7 @@ fn bench_session_touch(c: &mut Criterion) {
 
 /// Benchmark session expiration check
 fn bench_session_expiration(c: &mut Criterion) {
-    let session = Session::new(ProtocolType::Telnet, "127.0.0.1:23".to_string());
+    let session = GatewaySession::new(ProtocolType::Telnet, "127.0.0.1:23".to_string());
 
     c.bench_function("session_is_expired", |b| {
         b.iter(|| session.is_expired(black_box(300)));
@@ -86,9 +84,7 @@ fn bench_session_expiration(c: &mut Criterion) {
 fn bench_session_manager(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
-    let pool = rt.block_on(create_bench_pool());
-    let store = SessionStore::new(pool);
-    let manager = Arc::new(SessionManager::new(store, 300));
+    let manager = Arc::new(SessionManager::new(300));
 
     let mut group = c.benchmark_group("session_manager");
 
@@ -139,9 +135,7 @@ fn bench_session_manager(c: &mut Criterion) {
 fn bench_connection_pool(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
-    let pool_db = rt.block_on(create_bench_pool());
-    let store = SessionStore::new(pool_db);
-    let manager = Arc::new(SessionManager::new(store, 300));
+    let manager = Arc::new(SessionManager::new(300));
     let pool = Arc::new(ConnectionPool::new(manager.clone()));
 
     let mut group = c.benchmark_group("connection_pool");
@@ -206,9 +200,7 @@ fn bench_connection_pool(c: &mut Criterion) {
 fn bench_concurrent_sessions(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
-    let pool = rt.block_on(create_bench_pool());
-    let store = SessionStore::new(pool);
-    let manager = Arc::new(SessionManager::new(store, 300));
+    let manager = Arc::new(SessionManager::new(300));
 
     let mut group = c.benchmark_group("concurrent_sessions");
 
@@ -246,9 +238,7 @@ fn bench_concurrent_sessions(c: &mut Criterion) {
 fn bench_session_cleanup(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
-    let pool = rt.block_on(create_bench_pool());
-    let store = SessionStore::new(pool);
-    let manager = Arc::new(SessionManager::new(store, 300));
+    let manager = Arc::new(SessionManager::new(300));
 
     // Create some expired sessions
     rt.block_on(async {
@@ -291,5 +281,3 @@ criterion_group!(
 );
 
 criterion_main!(benches);
-
-

@@ -1,0 +1,23 @@
+# Features to implement
+
+- [ ] Basic Movement (Walking, Running)
+- [ ] Entering and Exiting Special Doors
+- [ ] Room/Item/NPC Editor
+- [ ] Basic Automated Combat
+- [ ] Meditation skill
+- [ ] Crafting System
+  - [ ] Materials System
+  - [ ] Basic Crafting Code
+- [ ] Crafting Skills
+  - [ ] Herbalism Skill
+  - [ ] Alchemy Skill
+  - [ ] Leatherworking Skill
+  - [ ] Blacksmithing Skill
+  - [ ] Tailoring Skill
+  - [ ] Fletchery Skill
+  - [ ] Cooking Skill
+- [ ] Core Powers System (Chi, Psi, Magic)
+- [ ] Powers System Skills
+  - [ ] Chi Skills
+  - [ ] Psi Skills
+  - [ ] Magic Skills

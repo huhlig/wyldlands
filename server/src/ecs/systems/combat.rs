@@ -17,7 +17,7 @@
 //! Combat system for fighting mechanics
 
 use crate::ecs::components::{
-    BodyAttributes, Combatant, EntityId, EntityUuid, EquipSlot, Equipment, StatusEffect,
+    AttributeScores, Combatant, EntityId, EntityUuid, EquipSlot, Equipment, StatusEffect,
     StatusEffectType, StatusEffects,
 };
 use crate::ecs::events::{EventBus, GameEvent};
@@ -136,7 +136,7 @@ impl CombatSystem {
         let mut damage = 10; // Base damage
 
         // Add offence score modifier
-        if let Ok(attrs) = world.get::<&BodyAttributes>(attacker) {
+        if let Ok(attrs) = world.get::<&AttributeScores>(attacker) {
             damage += (attrs.score_offence - 10) / 2; // Modifier calculation
         }
 
@@ -160,7 +160,7 @@ impl CombatSystem {
 
         // Apply damage to defender
         let mut target_died = false;
-        if let Ok(mut health) = world.get::<&mut BodyAttributes>(defender) {
+        if let Ok(mut health) = world.get::<&mut AttributeScores>(defender) {
             health.health_current = (health.health_current - damage as f32).max(0.0);
             target_died = health.health_current <= 0.0;
 
@@ -213,7 +213,7 @@ impl CombatSystem {
 
         // Check which targets are alive (separate pass to avoid borrow issues)
         attacks.retain(|(_, target)| {
-            if let Ok(health) = world.get::<&BodyAttributes>(*target) {
+            if let Ok(health) = world.get::<&AttributeScores>(*target) {
                 health.health_current > 0.0
             } else {
                 false
@@ -261,7 +261,7 @@ impl CombatSystem {
 
         // Check which targets are alive
         attacks.retain(|(_, target)| {
-            if let Ok(health) = world.get::<&BodyAttributes>(*target) {
+            if let Ok(health) = world.get::<&AttributeScores>(*target) {
                 health.health_current > 0.0
             } else {
                 false
@@ -278,7 +278,7 @@ impl CombatSystem {
     pub fn calculate_initiative(&self, world: &GameWorld, entity: EcsEntity) -> i32 {
         let mut initiative = 10; // Base initiative
 
-        if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+        if let Ok(attrs) = world.get::<&AttributeScores>(entity) {
             initiative += (attrs.score_finesse - 10) / 2;
         }
 
@@ -291,7 +291,7 @@ impl CombatSystem {
     /// Start defending - increases defense for one round
     pub fn defend(&mut self, world: &mut GameWorld, entity: EcsEntity) -> Result<(), String> {
         // Calculate defense bonus based on attributes
-        let defense_bonus = if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+        let defense_bonus = if let Ok(attrs) = world.get::<&AttributeScores>(entity) {
             5 + (attrs.score_defence - 10) / 2
         } else {
             5
@@ -342,7 +342,7 @@ impl CombatSystem {
         }
 
         // Calculate flee chance based on finesse
-        let flee_chance = if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+        let flee_chance = if let Ok(attrs) = world.get::<&AttributeScores>(entity) {
             0.5 + (attrs.score_finesse as f32 - 10.0) * 0.02
         } else {
             0.5
@@ -454,13 +454,13 @@ mod tests {
         let attacker = world.spawn((
             Name::new("Attacker"),
             Combatant::new(),
-            BodyAttributes::new(),
+            AttributeScores::new(),
         ));
 
         let defender = world.spawn((
             Name::new("Defender"),
             Combatant::new(),
-            BodyAttributes::new(),
+            AttributeScores::new(),
         ));
 
         let result = system.attack(&mut world, attacker, defender);
@@ -470,7 +470,7 @@ mod tests {
         assert!(result.hit);
         assert!(result.damage > 0);
 
-        let health = world.get::<&BodyAttributes>(defender).unwrap();
+        let health = world.get::<&AttributeScores>(defender).unwrap();
         assert!(health.health_current < 100.0);
     }
 
@@ -483,10 +483,10 @@ mod tests {
         let attacker = world.spawn((
             Name::new("Attacker"),
             Combatant::new(),
-            BodyAttributes::new(),
+            AttributeScores::new(),
         ));
 
-        let mut defender_attrs = BodyAttributes::new();
+        let mut defender_attrs = AttributeScores::new();
         defender_attrs.health_maximum = 1.0;
         defender_attrs.health_current = 1.0;
         let defender = world.spawn((Name::new("Defender"), Combatant::new(), defender_attrs));
@@ -494,7 +494,7 @@ mod tests {
         system.start_combat(&mut world, attacker, defender);
         system.attack(&mut world, attacker, defender);
 
-        let health = world.get::<&BodyAttributes>(defender).unwrap();
+        let health = world.get::<&AttributeScores>(defender).unwrap();
         assert!(health.health_current <= 0.0);
 
         // Combat should end after death
@@ -511,14 +511,14 @@ mod tests {
         let attacker = world.spawn((
             Name::new("Attacker"),
             Combatant::new(),
-            BodyAttributes::new(),
+            AttributeScores::new(),
             EntityUuid::new(),
         ));
 
         let defender = world.spawn((
             Name::new("Defender"),
             Combatant::new(),
-            BodyAttributes::new(),
+            AttributeScores::new(),
             EntityUuid::new(),
         ));
 
@@ -527,7 +527,7 @@ mod tests {
         // Update should trigger attacks after cooldown
         system.update(&mut world, 1.0);
 
-        let health = world.get::<&BodyAttributes>(defender).unwrap();
+        let health = world.get::<&AttributeScores>(defender).unwrap();
         assert!(health.health_current < 100.0);
     }
 
@@ -537,7 +537,7 @@ mod tests {
         let event_bus = EventBus::new();
         let system = CombatSystem::new(event_bus);
 
-        let entity = world.spawn((Name::new("Test"), BodyAttributes::new()));
+        let entity = world.spawn((Name::new("Test"), AttributeScores::new()));
 
         let initiative = system.calculate_initiative(&world, entity);
         assert!(initiative > 0);

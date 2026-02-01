@@ -14,38 +14,28 @@
 // limitations under the License.
 //
 
-mod admin;
-mod auth;
-mod avatar;
-mod banner;
-mod connection;
+mod properties;
+mod config;
 mod context;
+mod grpc;
 mod pool;
 mod protocol;
 mod reconnection;
-mod rpc_client;
-mod rpc_server;
+mod server;
 mod session;
-mod shell;
-mod telnet;
-mod webapp;
-mod websocket;
 
+use crate::config::{Arguments, Configuration};
 use crate::context::ServerContext;
-use crate::rpc_client::RpcClientManager;
-use crate::rpc_server::GatewayRpcServer;
-use axum::{Router, routing::get};
+use crate::grpc::{GatewayRpcServer, RpcClientManager};
 use clap::Parser;
-use sqlx::Executor;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server as TonicServer;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 use tracing_subscriber::EnvFilter;
-use wyldlands_common::proto::server_gateway_server::ServerGatewayServer;
-use wyldlands_gateway::config::{Arguments, Configuration};
+use wyldlands_common::proto::world_to_session_server::WorldToSessionServer;
 
 #[tokio::main]
+#[instrument(name = "gateway_main")]
 async fn main() {
     // Load arguments from the command line
     let arguments: Arguments = Parser::parse();
@@ -58,6 +48,8 @@ async fn main() {
         .with_level(true)
         .with_ansi(true)
         .init();
+
+    info!("Tracing initialized");
 
     // Load environment variables from .env file if specified
     if let Some(ref env_file) = arguments.env_file {
@@ -79,22 +71,8 @@ async fn main() {
     debug!("Configuration loaded: {:?}", config);
     info!("Starting Wyldlands Gateway Server...");
 
-    // Initialize the database connection pool
-    info!("Connecting to Database at {}", &config.database.url);
-    let database = sqlx::postgres::PgPoolOptions::new()
-        .after_connect(|conn, _meta| {
-            Box::pin(async move {
-                // Set the search path for this specific connection
-                conn.execute("SET search_path = wyldlands, public;").await?;
-                Ok(())
-            })
-        })
-        .max_connections(5)
-        .connect(&config.database.url)
-        .await
-        .expect("Failed to connect to database");
-
     // Create RPC client for server communication
+    let _rpc_span = tracing::info_span!("rpc_client_setup").entered();
     let rpc_client = Arc::new(RpcClientManager::new(
         config.server.addr.as_str(),
         config.server.auth_key.as_str(),
@@ -121,7 +99,41 @@ async fn main() {
 
     // Create server context with session management
     // Default session timeout: 300 seconds (5 minutes)
-    let context = ServerContext::new(database, 300, rpc_client);
+    let context = ServerContext::new(300, rpc_client);
+
+    // Spawn banner refresh task that runs after RPC connection
+    let rpc_client_banner = Arc::clone(context.rpc_client());
+    let banner_manager = Arc::clone(context.properties_manager());
+    tokio::spawn(async move {
+        loop {
+            // Wait for RPC client to be connected
+            if rpc_client_banner.is_connected().await {
+                tracing::info!("RPC connected, refreshing banners from server");
+                let properties = vec![
+                    wyldlands_common::gateway::GatewayProperty::BannerWelcome,
+                    wyldlands_common::gateway::GatewayProperty::BannerMotd,
+                    wyldlands_common::gateway::GatewayProperty::BannerLogin,
+                    wyldlands_common::gateway::GatewayProperty::BannerLogout,
+                    wyldlands_common::gateway::GatewayProperty::AdminHtml,
+                    wyldlands_common::gateway::GatewayProperty::AdminCss,
+                    wyldlands_common::gateway::GatewayProperty::AdminJs,
+                    wyldlands_common::gateway::GatewayProperty::ClientHtml,
+                    wyldlands_common::gateway::GatewayProperty::ClientCss,
+                    wyldlands_common::gateway::GatewayProperty::ClientJs,
+                ];
+                if let Err(e) = banner_manager.refresh_cached_properties(&properties).await {
+                    tracing::warn!("Failed to refresh banners: {}", e);
+                } else {
+                    tracing::info!("Banners refreshed successfully");
+                }
+                // Wait 5 minutes before checking again (banner cache TTL)
+                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+            } else {
+                // Check connection status every 5 seconds
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+        }
+    });
 
     // Spawn connection pool handler
     let pool = context.connection_pool().clone();
@@ -142,13 +154,7 @@ async fn main() {
     });
 
     // build our application with routes
-    let webapp = Router::new()
-        .route("/client.html", get(webapp::client_page))
-        .route("/client.css", get(webapp::client_css))
-        .route("/client.js", get(webapp::client_js))
-        .route("/websocket", get(websocket::handler))
-        .nest("/admin", admin::create_admin_router())
-        .with_state(context.clone());
+    let webapp = self::server::router(&context);
 
     // Get websocket config or use defaults
     let websocket_config = config.websocket.unwrap_or_default();
@@ -164,27 +170,32 @@ async fn main() {
     );
 
     // Create gRPC server for receiving calls from world server (before telnet to avoid move)
-    let grpc_config = config.grpc.unwrap_or_default();
-    let grpc_addr: SocketAddr = grpc_config.addr.to_addr();
-    let grpc_server = GatewayRpcServer::new(context.connection_pool().clone());
+    let grpc_addr = config
+        .server
+        .addr
+        .into_inner()
+        .to_addrs()
+        .expect("Failed to resolve gRPC address")
+        .next()
+        .expect("No addresses resolved for gRPC server");
+    let grpc_server = GatewayRpcServer::new(
+        context.connection_pool().clone(),
+        context.session_manager().clone(),
+    );
 
-    // Create telnet server
-    let telnet_config = telnet::TelnetConfig::default();
-    let telnet_server = telnet::TelnetServer::new(context, telnet_config);
-
-    // Get telnet config or use defaults
-    let telnet_bind_config = config.telnet.unwrap_or_default();
-    let telnet_listener = tokio::net::TcpListener::bind(telnet_bind_config.addr.to_addr())
-        .await
-        .expect("Unable to bind to telnet port");
+    // Create termionix telnet server
+    let telnet_config = config.telnet.clone().unwrap_or_default();
+    let telnet_addr = telnet_config.addr.to_addr();
+    let telnet_ip = telnet_config.addr.to_ip();
+    let telnet_port = telnet_config.addr.to_port();
 
     info!(
-        "Telnet Server listening on {} ({}:{})",
-        telnet_bind_config.addr,
-        telnet_bind_config.addr.to_ip(),
-        telnet_bind_config.addr.to_port(),
+        "Termionix Telnet Server will listen on {} ({}:{})",
+        telnet_addr, telnet_ip, telnet_port,
     );
-    
+
+    let telnet_server = server::TermionixTelnetServer::new(context, telnet_config);
+
     info!("Starting gRPC server on {}", grpc_addr);
 
     // Spawn all services
@@ -195,14 +206,14 @@ async fn main() {
     });
 
     let telnet_handle = tokio::spawn(async move {
-        if let Err(e) = telnet_server.run(telnet_listener).await {
+        if let Err(e) = telnet_server.run().await {
             tracing::error!("Telnet server error: {}", e);
         }
     });
 
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) = TonicServer::builder()
-            .add_service(ServerGatewayServer::new(grpc_server))
+            .add_service(WorldToSessionServer::new(grpc_server))
             .serve(grpc_addr)
             .await
         {

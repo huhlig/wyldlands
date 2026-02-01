@@ -22,12 +22,14 @@
 //! - Auto-save of dirty entities
 //! - Component-based relational storage
 
+use crate::account::AvatarEntry;
 use crate::ecs::components::*;
 use crate::ecs::registry::EntityRegistry;
 use crate::ecs::{EcsEntity, GameWorld};
 use hecs::Entity;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -60,27 +62,142 @@ impl PersistenceManager {
     }
 
     /// Get account by ID from database
-    pub async fn get_account_by_id(&self, account_id: Uuid) -> Result<wyldlands_common::account::Account, sqlx::Error> {
-        sqlx::query_as::<_, wyldlands_common::account::Account>(
+    pub async fn get_account_by_id(
+        &self,
+        account_id: Uuid,
+    ) -> Result<crate::account::Account, sqlx::Error> {
+        sqlx::query_as::<_, crate::account::Account>(
             "SELECT id, login, display, timezone, discord, email, rating, active, role
              FROM wyldlands.accounts
-             WHERE id = $1"
+             WHERE id = $1",
         )
         .bind(account_id)
         .fetch_one(&self.pool)
         .await
     }
 
-    /// Create a new character entity in the database
-    /// Returns the UUID of the newly created character
-    pub async fn create_character(
+    /// Get account by username from database
+    pub async fn get_account_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<crate::account::Account>, sqlx::Error> {
+        sqlx::query_as::<_, crate::account::Account>(
+            "SELECT id, login, display, timezone, discord, email, rating, active, role
+             FROM wyldlands.accounts
+             WHERE LOWER(login) = LOWER($1)",
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Return Account Record on successful authentication
+    pub async fn get_account_by_authentication(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<crate::account::Account>, sqlx::Error> {
+        sqlx::query_as::<_, crate::account::Account>(
+            "SELECT id, login, display, timezone, discord, email, rating, active, role
+             FROM wyldlands.accounts
+             WHERE LOWER(login) = LOWER($1) AND password = crypt($2, gen_salt('bf'))",
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Create a new account with bcrypt hashed password
+    pub async fn create_account(
+        &self,
+        username: &str,
+        display_name: &str,
+        password: &str,
+    ) -> Result<Option<crate::account::Account>, String> {
+        let account_id = uuid::Uuid::new_v4();
+
+        let account = sqlx::query_as::<_, crate::account::Account>(
+            "INSERT INTO wyldlands.accounts (id, login, display, password, role, active, rating, created_at, updated_at, last_login)
+             VALUES ($1, $2, $3, crypt($4, gen_salt('bf')), 'player', true, 0, NOW(), NOW(), NOW())
+             RETURNING id, login, display, timezone, discord, email, rating, active, role",
+        )
+            .bind(account_id)
+            .bind(username)
+            .bind(display_name)
+            .bind(password)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| format!("Failed to create account: {}", e))?;
+
+        Ok(Some(account))
+    }
+
+    /// Check if username exists
+    pub async fn username_exists(&self, username: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM wyldlands.accounts WHERE LOWER(login) = LOWER($1))",
+        )
+        .bind(username)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Update last_login timestamp for an account
+    pub async fn update_last_login(&self, account_id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE wyldlands.accounts SET last_login = NOW() WHERE id = $1")
+            .bind(account_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List Avatars for an account
+    pub async fn list_characters_for_account(
         &self,
         account_id: Uuid,
-        name: String,
-        description_short: String,
-        description_long: String,
+    ) -> Result<Vec<AvatarEntry>, sqlx::Error> {
+        sqlx::query_as::<_, AvatarEntry>(
+            "SELECT a.entity_id, a.account_id, a.available, n.display, n.keywords, a.last_played
+             FROM wyldlands.entity_avatars a
+             JOIN wyldlands.entity_name n ON a.entity_id = n.entity_id
+             WHERE a.account_id = $1
+             ORDER BY a.last_played DESC",
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Get character by UUID and verify ownership
+    pub async fn get_character_for_account(
+        &self,
+        account_id: Uuid,
+        entity_id: Uuid,
+    ) -> Result<Option<AvatarEntry>, sqlx::Error> {
+        sqlx::query_as::<_, AvatarEntry>(
+            "SELECT a.entity_id, a.account_id, a.available, n.display, n.keywords, a.last_played
+             FROM wyldlands.entity_avatars a
+             JOIN wyldlands.entity_name n ON a.entity_id = n.entity_id
+             WHERE a.account_id = $1 AND a.account_id = $2",
+        )
+        .bind(account_id)
+        .bind(entity_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Create a new character entity in the database with full attributes, talents, and skills
+    /// Returns the UUID of the newly created character
+    pub async fn create_character_with_builder(
+        &self,
+        account_id: Uuid,
+        builder: &CharacterBuilder,
     ) -> Result<Uuid, String> {
-        tracing::info!("Creating new character for account: {}", account_id);
+        tracing::info!(
+            "Creating new character {} for account: {}",
+            builder.name,
+            account_id
+        );
 
         let entity_uuid = Uuid::new_v4();
 
@@ -103,8 +220,8 @@ impl PersistenceManager {
 
         // Link to account in entity_avatars
         sqlx::query(
-            "INSERT INTO wyldlands.entity_avatars (entity_id, account_id, created_at)
-             VALUES ($1, $2, NOW())",
+            "INSERT INTO wyldlands.entity_avatars (entity_id, account_id, created_at, available)
+             VALUES ($1, $2, NOW(), true)",
         )
         .bind(entity_uuid)
         .bind(account_id)
@@ -113,19 +230,24 @@ impl PersistenceManager {
         .map_err(|e| format!("Failed to link avatar to account: {}", e))?;
 
         // Create name component
-        let keywords = vec![name.to_lowercase()];
+        let keywords = vec![builder.name.to_lowercase()];
         sqlx::query(
             "INSERT INTO wyldlands.entity_name (entity_id, display, keywords)
              VALUES ($1, $2, $3)",
         )
         .bind(entity_uuid)
-        .bind(&name)
+        .bind(&builder.name)
         .bind(&keywords)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to create name component: {}", e))?;
 
         // Create description component
+        let description_short = format!("A newly created character named {}", builder.name);
+        let description_long = format!(
+            "This is {}, a newly created character ready for adventure.",
+            builder.name
+        );
         sqlx::query(
             "INSERT INTO wyldlands.entity_description (entity_id, short, long)
              VALUES ($1, $2, $3)",
@@ -137,44 +259,106 @@ impl PersistenceManager {
         .await
         .map_err(|e| format!("Failed to create description component: {}", e))?;
 
-        // Create default body attributes
+        // Create body attributes from builder
+        let body_offence = builder.get_attribute(AttributeType::BodyOffence);
+        let body_finesse = builder.get_attribute(AttributeType::BodyFinesse);
+        let body_defence = builder.get_attribute(AttributeType::BodyDefence);
+        let body_health = builder.get_health(AttributeClass::Body);
+        let body_energy = builder.get_energy(AttributeClass::Body);
         sqlx::query(
-            "INSERT INTO wyldlands.entity_body_attributes 
-             (entity_id, score_offence, score_finesse, score_defence,
-              health_current, health_maximum, health_regen,
-              energy_current, energy_maximum, energy_regen)
-             VALUES ($1, 10, 10, 10, 100.0, 100.0, 1.0, 100.0, 100.0, 1.0)",
+            "INSERT INTO wyldlands.entity_body_attributes
+             (entity_id, score_offence, score_finesse, score_defence, health_current, energy_current)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(entity_uuid)
+        .bind(body_offence)
+        .bind(body_finesse)
+        .bind(body_defence)
+        .bind(body_health)
+        .bind(body_energy)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to create body attributes: {}", e))?;
 
-        // Create default mind attributes
+        // Create mind attributes from builder
+        let mind_offence = builder.get_attribute(AttributeType::MindOffence);
+        let mind_finesse = builder.get_attribute(AttributeType::MindFinesse);
+        let mind_defence = builder.get_attribute(AttributeType::MindDefence);
+        let mind_health = builder.get_health(AttributeClass::Mind);
+        let mind_energy = builder.get_energy(AttributeClass::Mind);
         sqlx::query(
-            "INSERT INTO wyldlands.entity_mind_attributes 
-             (entity_id, score_offence, score_finesse, score_defence,
-              health_current, health_maximum, health_regen,
-              energy_current, energy_maximum, energy_regen)
-             VALUES ($1, 10, 10, 10, 100.0, 100.0, 1.0, 100.0, 100.0, 1.0)",
+            "INSERT INTO wyldlands.entity_mind_attributes
+             (entity_id, score_offence, score_finesse, score_defence, health_current, energy_current)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(entity_uuid)
+        .bind(mind_offence)
+        .bind(mind_finesse)
+        .bind(mind_defence)
+        .bind(mind_health)
+        .bind(mind_energy)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to create mind attributes: {}", e))?;
 
-        // Create default soul attributes
+        // Create soul attributes from builder
+        let soul_offence = builder.get_attribute(AttributeType::SoulOffence);
+        let soul_finesse = builder.get_attribute(AttributeType::SoulFinesse);
+        let soul_defence = builder.get_attribute(AttributeType::SoulDefence);
+        let soul_health = builder.get_health(AttributeClass::Mind);
+        let soul_energy = builder.get_energy(AttributeClass::Mind);
         sqlx::query(
-            "INSERT INTO wyldlands.entity_soul_attributes 
-             (entity_id, score_offence, score_finesse, score_defence,
-              health_current, health_maximum, health_regen,
-              energy_current, energy_maximum, energy_regen)
-             VALUES ($1, 10, 10, 10, 100.0, 100.0, 1.0, 100.0, 100.0, 1.0)",
+            "INSERT INTO wyldlands.entity_soul_attributes
+             (entity_id, score_offence, score_finesse, score_defence, health_current, energy_current)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(entity_uuid)
+        .bind(soul_offence)
+        .bind(soul_finesse)
+        .bind(soul_defence)
+        .bind(soul_health)
+        .bind(soul_energy)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to create soul attributes: {}", e))?;
+
+        // Create skills from builder
+        if !builder.skills.is_empty() {
+            for (skill, rank, experience, knowledge) in builder.skills.iter() {
+                sqlx::query(
+                    "INSERT INTO wyldlands.entity_skills (entity_id, skill_name, experience, knowledge)
+                     VALUES ($1, $2, $3, $4)",
+                )
+                    .bind(entity_uuid)
+                    .bind(skill.name())
+                    .bind(experience)
+                    .bind(knowledge)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to create skill {}: {}", skill.name(), e))?;
+            }
+        }
+
+        // Store talents as Entries like skills, except there is no knowledge only experience.
+        if !builder.talents.is_empty() {
+            for (talent, rank, experience) in builder.talents.iter() {
+                sqlx::query(
+                    "INSERT INTO wyldlands.entity_talents (entity_id, talent_name, experience)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind(entity_uuid)
+                .bind(talent.name())
+                .bind(experience)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to create talent {}", talent.name()))?;
+            }
+            tracing::info!(
+                "Stored talents for character {}: {:?}",
+                builder.name,
+                builder.talents
+            );
+        }
 
         // Create commandable component
         sqlx::query(
@@ -192,7 +376,8 @@ impl PersistenceManager {
             .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
         tracing::info!(
-            "Created new character {} for account {}",
+            "Created new character {} ({}) for account {}",
+            builder.name,
             entity_uuid,
             account_id
         );
@@ -208,7 +393,6 @@ impl PersistenceManager {
         entity_uuid: Uuid,
         entity_id: EcsEntity,
     ) -> Result<(), String> {
-
         self.load_avatar_component(entity_uuid, entity_id, world)
             .await?;
         // Load components based on what exists in the database
@@ -223,6 +407,8 @@ impl PersistenceManager {
         self.load_soul_attributes_component(entity_uuid, entity_id, world)
             .await?;
         self.load_skills_component(entity_uuid, entity_id, world)
+            .await?;
+        self.load_talents_component(entity_uuid, entity_id, world)
             .await?;
         self.load_location_component(registry, entity_uuid, entity_id, world)
             .await?;
@@ -293,9 +479,14 @@ impl PersistenceManager {
         let entity_id = world.spawn((EntityUuid(entity_uuid),));
 
         // Load all components
-        self.load_entity_components(world, registry, entity_uuid, entity_id).await?;
+        self.load_entity_components(world, registry, entity_uuid, entity_id)
+            .await?;
 
-        tracing::info!("Loaded entity {} as ECS entity {:?}", entity_uuid, entity_id);
+        tracing::info!(
+            "Loaded entity {} as ECS entity {:?}",
+            entity_uuid,
+            entity_id
+        );
 
         Ok(entity_id)
     }
@@ -314,7 +505,11 @@ impl PersistenceManager {
     /// Excludes inactive player character avatars (available = false)
     /// Loads: Areas, Rooms, NPCs, Objects, Active Players, etc.
     /// Note: All entities in the database are considered persistent by default
-    pub async fn load_world(&self, world: &mut GameWorld, registry: &mut EntityRegistry) -> Result<usize, String> {
+    pub async fn load_world(
+        &self,
+        world: &mut GameWorld,
+        registry: &mut EntityRegistry,
+    ) -> Result<usize, String> {
         tracing::info!("Loading world from database...");
 
         // Get all entity UUIDs, excluding inactive avatars
@@ -322,7 +517,7 @@ impl PersistenceManager {
             "SELECT DISTINCT e.uuid
              FROM wyldlands.entities e
              LEFT JOIN wyldlands.entity_avatars ea ON e.uuid = ea.entity_id
-             WHERE ea.entity_id IS NULL OR ea.available = true"
+             WHERE ea.entity_id IS NULL OR ea.available = true",
         )
         .fetch_all(&self.pool)
         .await
@@ -335,7 +530,8 @@ impl PersistenceManager {
         tracing::info!("Phase 1: Creating entities and registering UUIDs...");
         for (entity_uuid,) in &entity_uuids {
             let entity_id = world.spawn((EntityUuid(*entity_uuid),));
-            registry.register(entity_id, *entity_uuid)
+            registry
+                .register(entity_id, *entity_uuid)
                 .map_err(|e| format!("Failed to register entity {}: {}", entity_uuid, e))?;
         }
         tracing::info!("Registered {} entities", total_entities);
@@ -346,10 +542,14 @@ impl PersistenceManager {
         let mut failed_count = 0;
 
         for (entity_uuid,) in entity_uuids {
-            let entity_id = registry.get_entity(entity_uuid)
+            let entity_id = registry
+                .get_entity(entity_uuid)
                 .ok_or_else(|| format!("Entity {} not found in registry", entity_uuid))?;
 
-            match self.load_entity_components(world, registry, entity_uuid, entity_id).await {
+            match self
+                .load_entity_components(world, registry, entity_uuid, entity_id)
+                .await
+            {
                 Ok(_) => {
                     loaded_count += 1;
                     if loaded_count % 100 == 0 {
@@ -462,10 +662,8 @@ impl PersistenceManager {
         entity_id: EcsEntity,
         world: &mut GameWorld,
     ) -> Result<(), String> {
-        let row: Option<(i32, i32, i32, f32, f32, f32, f32, f32, f32)> = sqlx::query_as(
-            "SELECT score_offence, score_finesse, score_defence, 
-                    health_current, health_maximum, health_regen,
-                    energy_current, energy_maximum, energy_regen
+        let row: Option<(i32, i32, i32, f32, f32)> = sqlx::query_as(
+            "SELECT score_offence, score_finesse, score_defence, health_current, energy_current
              FROM wyldlands.entity_body_attributes WHERE entity_id = $1",
         )
         .bind(entity_uuid)
@@ -473,31 +671,9 @@ impl PersistenceManager {
         .await
         .map_err(|e| format!("Failed to load body attributes component: {}", e))?;
 
-        if let Some((
-            score_offence,
-            score_finesse,
-            score_defence,
-            health_current,
-            health_maximum,
-            health_regen,
-            energy_current,
-            energy_maximum,
-            energy_regen,
-        )) = row
-        {
-            let attributes = BodyAttributes {
-                score_offence,
-                score_finesse,
-                score_defence,
-                health_current,
-                health_maximum,
-                health_regen,
-                energy_current,
-                energy_maximum,
-                energy_regen,
-            };
+        if let Some(scores) = row.map(AttributeScores::from) {
             world
-                .insert_one(entity_id, attributes)
+                .insert_one(entity_id, BodyAttributeScores(scores))
                 .map_err(|e| format!("Failed to add BodyAttributes component: {}", e))?;
         }
 
@@ -511,10 +687,8 @@ impl PersistenceManager {
         entity_id: EcsEntity,
         world: &mut GameWorld,
     ) -> Result<(), String> {
-        let row: Option<(i32, i32, i32, f32, f32, f32, f32, f32, f32)> = sqlx::query_as(
-            "SELECT score_offence, score_finesse, score_defence, 
-                    health_current, health_maximum, health_regen,
-                    energy_current, energy_maximum, energy_regen
+        let row: Option<(i32, i32, i32, f32, f32)> = sqlx::query_as(
+            "SELECT score_offence, score_finesse, score_defence, health_current, energy_current
              FROM wyldlands.entity_mind_attributes WHERE entity_id = $1",
         )
         .bind(entity_uuid)
@@ -522,31 +696,9 @@ impl PersistenceManager {
         .await
         .map_err(|e| format!("Failed to load mind attributes component: {}", e))?;
 
-        if let Some((
-            score_offence,
-            score_finesse,
-            score_defence,
-            health_current,
-            health_maximum,
-            health_regen,
-            energy_current,
-            energy_maximum,
-            energy_regen,
-        )) = row
-        {
-            let attributes = MindAttributes {
-                score_offence,
-                score_finesse,
-                score_defence,
-                health_current,
-                health_maximum,
-                health_regen,
-                energy_current,
-                energy_maximum,
-                energy_regen,
-            };
+        if let Some(scores) = row.map(AttributeScores::from) {
             world
-                .insert_one(entity_id, attributes)
+                .insert_one(entity_id, MindAttributeScores(scores))
                 .map_err(|e| format!("Failed to add MindAttributes component: {}", e))?;
         }
 
@@ -560,10 +712,8 @@ impl PersistenceManager {
         entity_id: EcsEntity,
         world: &mut GameWorld,
     ) -> Result<(), String> {
-        let row: Option<(i32, i32, i32, f32, f32, f32, f32, f32, f32)> = sqlx::query_as(
-            "SELECT score_offence, score_finesse, score_defence, 
-                    health_current, health_maximum, health_regen,
-                    energy_current, energy_maximum, energy_regen
+        let row: Option<(i32, i32, i32, f32, f32)> = sqlx::query_as(
+            "SELECT score_offence, score_finesse, score_defence, health_current, energy_current
              FROM wyldlands.entity_soul_attributes WHERE entity_id = $1",
         )
         .bind(entity_uuid)
@@ -571,31 +721,9 @@ impl PersistenceManager {
         .await
         .map_err(|e| format!("Failed to load soul attributes component: {}", e))?;
 
-        if let Some((
-            score_offence,
-            score_finesse,
-            score_defence,
-            health_current,
-            health_maximum,
-            health_regen,
-            energy_current,
-            energy_maximum,
-            energy_regen,
-        )) = row
-        {
-            let attributes = SoulAttributes {
-                score_offence,
-                score_finesse,
-                score_defence,
-                health_current,
-                health_maximum,
-                health_regen,
-                energy_current,
-                energy_maximum,
-                energy_regen,
-            };
+        if let Some(scores) = row.map(AttributeScores::from) {
             world
-                .insert_one(entity_id, attributes)
+                .insert_one(entity_id, SoulAttributeScores(scores))
                 .map_err(|e| format!("Failed to add SoulAttributes component: {}", e))?;
         }
 
@@ -609,36 +737,64 @@ impl PersistenceManager {
         entity_id: EcsEntity,
         world: &mut GameWorld,
     ) -> Result<(), String> {
-        let rows: Vec<(String, i32, i32, i32)> = sqlx::query_as(
-            "SELECT skill_name, level, experience, knowledge FROM wyldlands.entity_skills WHERE entity_id = $1"
+        let rows: Vec<(String, i32, i32)> = sqlx::query_as(
+            "SELECT skill_name, experience, knowledge
+                    FROM wyldlands.entity_skills WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| format!("Failed to load skills component: {}", e))?;
 
-        if !rows.is_empty() {
-            let mut skills_map = HashMap::new();
-            for (skill_name, _level, experience, knowledge) in rows {
-                // Convert string skill name to SkillId
-                if let Some(skill_id) = SkillId::from_string(&skill_name) {
-                    skills_map.insert(
-                        skill_id,
-                        Skill {
-                            experience,
-                            knowledge,
-                        },
-                    );
-                } else {
-                    tracing::warn!("Unknown skill name in database: {}", skill_name);
+        let mut skills = Skills::default();
+        for (skill_name, experience, knowledge) in rows {
+            // Convert string skill name to SkillId
+            match Skill::from_str(&skill_name) {
+                Ok(skill) => {
+                    skills.add_skill(skill, experience, knowledge);
+                }
+                Err(e) => {
+                    tracing::warn!("Unknown skill name in database: {}", e);
                 }
             }
-
-            let skills = Skills { skills: skills_map };
-            world
-                .insert_one(entity_id, skills)
-                .map_err(|e| format!("Failed to add Skills component: {}", e))?;
         }
+        world
+            .insert_one(entity_id, skills)
+            .map_err(|e| format!("Failed to add Skills component: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Load Talents component
+    async fn load_talents_component(
+        &self,
+        entity_uuid: Uuid,
+        entity_id: EcsEntity,
+        world: &mut GameWorld,
+    ) -> Result<(), String> {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT talent_name, experience FROM wyldlands.entity_talents WHERE entity_id = $1",
+        )
+        .bind(entity_uuid)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to load talents component: {}", e))?;
+
+        let mut talents = Talents::default();
+        for (talent_name, experience) in rows {
+            // Convert string skill name to SkillId
+            match Talent::from_str(&talent_name) {
+                Ok(talent) => {
+                    talents.add_talent(talent, experience);
+                }
+                Err(e) => {
+                    tracing::warn!("Unknown talent name in database: {}", e);
+                }
+            }
+        }
+        world
+            .insert_one(entity_id, talents)
+            .map_err(|e| format!("Failed to add Skills component: {}", e))?;
 
         Ok(())
     }
@@ -651,18 +807,20 @@ impl PersistenceManager {
         entity_id: EcsEntity,
         world: &mut GameWorld,
     ) -> Result<(), String> {
-        let row: Option<(Uuid,Uuid)> = sqlx::query_as(
-            "SELECT r.area_id, l.room_id FROM wyldlands.entity_location AS l LEFT JOIN wyldlands.entity_rooms as r ON l.room_id = r.entity_id WHERE l.entity_id = $1"
-        )
+        let row: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT r.area_id, l.room_id FROM wyldlands.entity_location AS l LEFT JOIN wyldlands.entity_rooms as r ON l.room_id = r.entity_id WHERE l.entity_id = $1"
+    )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| format!("Failed to load location component: {}", e))?;
 
         if let Some((area_uuid, room_uuid)) = row {
-            let area_id = registry.get_entity_id_by_uuid(area_uuid)
+            let area_id = registry
+                .get_entity_id_by_uuid(area_uuid)
                 .ok_or_else(|| format!("Area UUID {} not found in registry", area_uuid))?;
-            let room_id = registry.get_entity_id_by_uuid(room_uuid)
+            let room_id = registry
+                .get_entity_id_by_uuid(room_uuid)
                 .ok_or_else(|| format!("Room UUID {} not found in registry", room_uuid))?;
             let location = Location { area_id, room_id };
             world
@@ -690,7 +848,8 @@ impl PersistenceManager {
         .await
         .map_err(|e| format!("Failed to load combatant component: {}", e))?;
 
-        if let Some((in_combat, target_uuid, initiative, action_cooldown, time_since_action)) = row {
+        if let Some((in_combat, target_uuid, initiative, action_cooldown, time_since_action)) = row
+        {
             let target_id = target_uuid.and_then(|uuid| registry.get_entity_id_by_uuid(uuid));
             let combatant = Combatant {
                 in_combat,
@@ -718,8 +877,8 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let rows: Vec<(String, Uuid)> = sqlx::query_as(
-            "SELECT slot, item_id FROM wyldlands.entity_equipment WHERE entity_id = $1 AND item_id IS NOT NULL"
-        )
+        "SELECT slot, item_id FROM wyldlands.entity_equipment WHERE entity_id = $1 AND item_id IS NOT NULL"
+    )
         .bind(entity_uuid)
         .fetch_all(&self.pool)
         .await
@@ -753,9 +912,9 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(String, Option<String>, String, Option<Uuid>, f32, f32)> = sqlx::query_as(
-            "SELECT behavior_type, current_goal, state_type, state_target_id, update_interval, time_since_update
+        "SELECT behavior_type, current_goal, state_type, state_target_id, update_interval, time_since_update
              FROM wyldlands.entity_ai_controller WHERE entity_id = $1"
-        )
+    )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
         .await
@@ -774,7 +933,8 @@ impl PersistenceManager {
                 BehaviorType::from_str(&behavior_type_str),
                 StateType::from_str(&state_type_str),
             ) {
-                let state_target_id = state_target_uuid.and_then(|uuid| registry.get_entity_id_by_uuid(uuid));
+                let state_target_id =
+                    state_target_uuid.and_then(|uuid| registry.get_entity_id_by_uuid(uuid));
                 let ai_controller = AIController {
                     behavior_type,
                     current_goal,
@@ -800,8 +960,8 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT background, speaking_style FROM wyldlands.entity_personality WHERE entity_id = $1"
-        )
+        "SELECT background, speaking_style FROM wyldlands.entity_personality WHERE entity_id = $1"
+    )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
         .await
@@ -828,8 +988,9 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(String, Vec<String>)> = sqlx::query_as(
-            "SELECT area_kind::text, COALESCE(area_flags, '{}') as area_flags
-             FROM wyldlands.entity_areas WHERE entity_id = $1"
+            "SELECT area_kind::text,
+                    COALESCE(ARRAY(SELECT unnest(area_flags)::text), '{}') as area_flags
+             FROM wyldlands.entity_areas WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
@@ -844,7 +1005,10 @@ impl PersistenceManager {
                 "Dungeon" => AreaKind::Dungeon,
                 _ => return Err(format!("Unknown area kind: {}", area_kind_str)),
             };
-            let area = Area { area_kind, area_flags };
+            let area = Area {
+                area_kind,
+                area_flags,
+            };
             world
                 .insert_one(entity_id, area)
                 .map_err(|e| format!("Failed to add Area component: {}", e))?;
@@ -863,7 +1027,7 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         let row: Option<(Uuid, Vec<String>)> = sqlx::query_as(
             "SELECT area_id, COALESCE(room_flags::text[], '{}') as room_flags
-             FROM wyldlands.entity_rooms WHERE entity_id = $1"
+             FROM wyldlands.entity_rooms WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
@@ -871,7 +1035,8 @@ impl PersistenceManager {
         .map_err(|e| format!("Failed to load room component: {}", e))?;
 
         if let Some((area_uuid, flags_strs)) = row {
-            let area_id = registry.get_entity_id_by_uuid(area_uuid)
+            let area_id = registry
+                .get_entity_id_by_uuid(area_uuid)
                 .ok_or_else(|| format!("Area UUID {} not found in registry", area_uuid))?;
             let mut room_flags = Vec::new();
             for flag_str in flags_strs {
@@ -880,7 +1045,10 @@ impl PersistenceManager {
                     _ => tracing::warn!("Unknown room flag: {}", flag_str),
                 }
             }
-            let room = Room { area_id, room_flags };
+            let room = Room {
+                area_id,
+                room_flags,
+            };
             world
                 .insert_one(entity_id, room)
                 .map_err(|e| format!("Failed to add Room component: {}", e))?;
@@ -898,9 +1066,9 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let rows: Vec<(Uuid, String, bool, bool, Option<i32>, bool, bool, Option<String>, Option<i32>, bool)> = sqlx::query_as(
-            "SELECT dest_id, direction, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent
+        "SELECT dest_id, direction, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent
              FROM wyldlands.entity_room_exits WHERE entity_id = $1"
-        )
+    )
         .bind(entity_uuid)
         .fetch_all(&self.pool)
         .await
@@ -909,9 +1077,22 @@ impl PersistenceManager {
         if !rows.is_empty() {
             let mut exits = Exits::new();
 
-            for (dest_uuid, direction, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent) in rows {
-                let dest_id = registry.get_entity_id_by_uuid(dest_uuid)
-                    .ok_or_else(|| format!("Exit destination UUID {} not found in registry", dest_uuid))?;
+            for (
+                dest_uuid,
+                direction,
+                closeable,
+                closed,
+                door_rating,
+                lockable,
+                locked,
+                unlock_code,
+                lock_rating,
+                transparent,
+            ) in rows
+            {
+                let dest_id = registry.get_entity_id_by_uuid(dest_uuid).ok_or_else(|| {
+                    format!("Exit destination UUID {} not found in registry", dest_uuid)
+                })?;
                 let exit_data = ExitData {
                     dest_id,
                     direction,
@@ -943,15 +1124,27 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(Option<i32>, Option<f32>, bool, bool, Option<i32>, bool, bool, Option<String>, Option<i32>, bool)> = sqlx::query_as(
-            "SELECT capacity, max_weight, closeable, closed, container_rating, lockable, locked, unlock_code, lock_rating, transparent
+        "SELECT capacity, max_weight, closeable, closed, container_rating, lockable, locked, unlock_code, lock_rating, transparent
              FROM wyldlands.entity_container WHERE entity_id = $1"
-        )
+    )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| format!("Failed to load container component: {}", e))?;
 
-        if let Some((capacity, max_weight, closeable, closed, container_rating, lockable, locked, unlock_code, lock_rating, transparent)) = row {
+        if let Some((
+            capacity,
+            max_weight,
+            closeable,
+            closed,
+            container_rating,
+            lockable,
+            locked,
+            unlock_code,
+            lock_rating,
+            transparent,
+        )) = row
+        {
             let container = Container {
                 capacity,
                 max_weight,
@@ -981,7 +1174,7 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         let row: Option<(f32, String, bool, i32)> = sqlx::query_as(
             "SELECT weight, size::text, stackable, stack_size
-             FROM wyldlands.entity_containable WHERE entity_id = $1"
+             FROM wyldlands.entity_containable WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
@@ -1024,17 +1217,32 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(Uuid, bool, bool, Option<i32>, bool, bool, Option<String>, Option<i32>, bool)> = sqlx::query_as(
-            "SELECT dest_id, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent
+        "SELECT dest_id, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent
              FROM wyldlands.entity_enterable WHERE entity_id = $1"
-        )
+    )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| format!("Failed to load enterable component: {}", e))?;
 
-        if let Some((dest_uuid, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent)) = row {
-            let dest_id = registry.get_entity_id_by_uuid(dest_uuid)
-                .ok_or_else(|| format!("Enterable destination UUID {} not found in registry", dest_uuid))?;
+        if let Some((
+            dest_uuid,
+            closeable,
+            closed,
+            door_rating,
+            lockable,
+            locked,
+            unlock_code,
+            lock_rating,
+            transparent,
+        )) = row
+        {
+            let dest_id = registry.get_entity_id_by_uuid(dest_uuid).ok_or_else(|| {
+                format!(
+                    "Enterable destination UUID {} not found in registry",
+                    dest_uuid
+                )
+            })?;
             let enterable = Enterable {
                 dest_id,
                 closeable,
@@ -1062,7 +1270,7 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(Vec<String>,)> = sqlx::query_as(
-            "SELECT slots::text[] FROM wyldlands.entity_equipable WHERE entity_id = $1"
+            "SELECT slots::text[] FROM wyldlands.entity_equipable WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
@@ -1094,14 +1302,16 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         let row: Option<(i32, i32, i32, String, f32, f32)> = sqlx::query_as(
             "SELECT damage_min, damage_max, damage_cap, damage_type::text, attack_speed, range
-             FROM wyldlands.entity_weapon WHERE entity_id = $1"
+             FROM wyldlands.entity_weapon WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| format!("Failed to load weapon component: {}", e))?;
 
-        if let Some((damage_min, damage_max, damage_cap, damage_type_str, attack_speed, range)) = row {
+        if let Some((damage_min, damage_max, damage_cap, damage_type_str, attack_speed, range)) =
+            row
+        {
             if let Some(damage_type) = DamageType::from_str(&damage_type_str) {
                 let weapon = Weapon {
                     damage_min,
@@ -1127,13 +1337,12 @@ impl PersistenceManager {
         entity_id: EcsEntity,
         world: &mut GameWorld,
     ) -> Result<(), String> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT material FROM wyldlands.entity_material WHERE entity_id = $1"
-        )
-        .bind(entity_uuid)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to load material component: {}", e))?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT material FROM wyldlands.entity_material WHERE entity_id = $1")
+                .bind(entity_uuid)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| format!("Failed to load material component: {}", e))?;
 
         if let Some((material_str,)) = row {
             if let Some(material_kind) = MaterialKind::from_str(&material_str) {
@@ -1155,8 +1364,8 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT damage_kind::text, defense FROM wyldlands.entity_armor_defense WHERE entity_id = $1"
-        )
+        "SELECT damage_kind::text, defense FROM wyldlands.entity_armor_defense WHERE entity_id = $1"
+    )
         .bind(entity_uuid)
         .fetch_all(&self.pool)
         .await
@@ -1185,7 +1394,7 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let row: Option<(i32,)> = sqlx::query_as(
-            "SELECT max_queue_size FROM wyldlands.entity_commandable WHERE entity_id = $1"
+            "SELECT max_queue_size FROM wyldlands.entity_commandable WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
@@ -1213,7 +1422,7 @@ impl PersistenceManager {
         world: &mut GameWorld,
     ) -> Result<(), String> {
         let exists: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT entity_id FROM wyldlands.entity_interactable WHERE entity_id = $1"
+            "SELECT entity_id FROM wyldlands.entity_interactable WHERE entity_id = $1",
         )
         .bind(entity_uuid)
         .fetch_optional(&self.pool)
@@ -1234,11 +1443,7 @@ impl PersistenceManager {
 
     /// Save any entity to database
     /// Saves all components attached to the entity (characters, rooms, objects, NPCs, etc.)
-    pub async fn save_entity(
-        &self,
-        world: &GameWorld,
-        entity_id: EcsEntity,
-    ) -> Result<(), String> {
+    pub async fn save_entity(&self, world: &GameWorld, entity_id: EcsEntity) -> Result<(), String> {
         // Get entity UUID
         let entity_uuid = world
             .get::<&EntityUuid>(entity_id)
@@ -1280,6 +1485,8 @@ impl PersistenceManager {
         self.save_soul_attributes_component(uuid, entity_id, world, &mut tx)
             .await?;
         self.save_skills_component(uuid, entity_id, world, &mut tx)
+            .await?;
+        self.save_talents_component(uuid, entity_id, world, &mut tx)
             .await?;
         self.save_location_component(uuid, entity_id, world, &mut tx)
             .await?;
@@ -1372,11 +1579,11 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         if let Ok(avatar) = world.get::<&Avatar>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_avatars (entity_id, account_id, available, created_at)
+            "INSERT INTO wyldlands.entity_avatars (entity_id, account_id, available, created_at)
                  VALUES ($1, $2, $3, NOW())
                  ON CONFLICT (account_id, entity_id)
                  DO UPDATE SET available = EXCLUDED.available"
-            )
+        )
             .bind(entity_uuid)
             .bind(avatar.account_id)
             .bind(avatar.available)
@@ -1420,35 +1627,25 @@ impl PersistenceManager {
         world: &GameWorld,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
-        if let Ok(attrs) = world.get::<&BodyAttributes>(entity_id) {
+        if let Ok(attrs) = world.get::<&BodyAttributeScores>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_body_attributes 
-                 (entity_id, score_offence, score_finesse, score_defence,
-                  health_current, health_maximum, health_regen,
-                  energy_current, energy_maximum, energy_regen)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                "INSERT INTO wyldlands.entity_body_attributes
+                 (entity_id, score_offence, score_finesse, score_defence, health_current, energy_current)
+                 VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (entity_id)
                  DO UPDATE SET 
                     score_offence = EXCLUDED.score_offence,
                     score_finesse = EXCLUDED.score_finesse,
                     score_defence = EXCLUDED.score_defence,
                     health_current = EXCLUDED.health_current,
-                    health_maximum = EXCLUDED.health_maximum,
-                    health_regen = EXCLUDED.health_regen,
-                    energy_current = EXCLUDED.energy_current,
-                    energy_maximum = EXCLUDED.energy_maximum,
-                    energy_regen = EXCLUDED.energy_regen",
+                    energy_current = EXCLUDED.energy_current"
             )
             .bind(entity_uuid)
-            .bind(attrs.score_offence)
-            .bind(attrs.score_finesse)
-            .bind(attrs.score_defence)
-            .bind(attrs.health_current)
-            .bind(attrs.health_maximum)
-            .bind(attrs.health_regen)
-            .bind(attrs.energy_current)
-            .bind(attrs.energy_maximum)
-            .bind(attrs.energy_regen)
+            .bind(attrs.0.score_offence)
+            .bind(attrs.0.score_finesse)
+            .bind(attrs.0.score_defence)
+            .bind(attrs.0.health_current)
+            .bind(attrs.0.energy_current)
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("Failed to save body attributes component: {}", e))?;
@@ -1464,35 +1661,25 @@ impl PersistenceManager {
         world: &GameWorld,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
-        if let Ok(attrs) = world.get::<&MindAttributes>(entity_id) {
+        if let Ok(attrs) = world.get::<&MindAttributeScores>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_mind_attributes 
-                 (entity_id, score_offence, score_finesse, score_defence,
-                  health_current, health_maximum, health_regen,
-                  energy_current, energy_maximum, energy_regen)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                "INSERT INTO wyldlands.entity_mind_attributes
+                 (entity_id, score_offence, score_finesse, score_defence, health_current, energy_current)
+                 VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (entity_id)
                  DO UPDATE SET 
                     score_offence = EXCLUDED.score_offence,
                     score_finesse = EXCLUDED.score_finesse,
                     score_defence = EXCLUDED.score_defence,
                     health_current = EXCLUDED.health_current,
-                    health_maximum = EXCLUDED.health_maximum,
-                    health_regen = EXCLUDED.health_regen,
-                    energy_current = EXCLUDED.energy_current,
-                    energy_maximum = EXCLUDED.energy_maximum,
-                    energy_regen = EXCLUDED.energy_regen",
+                    energy_current = EXCLUDED.energy_current"
             )
             .bind(entity_uuid)
-            .bind(attrs.score_offence)
-            .bind(attrs.score_finesse)
-            .bind(attrs.score_defence)
-            .bind(attrs.health_current)
-            .bind(attrs.health_maximum)
-            .bind(attrs.health_regen)
-            .bind(attrs.energy_current)
-            .bind(attrs.energy_maximum)
-            .bind(attrs.energy_regen)
+            .bind(attrs.0.score_offence)
+            .bind(attrs.0.score_finesse)
+            .bind(attrs.0.score_defence)
+            .bind(attrs.0.health_current)
+            .bind(attrs.0.energy_current)
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("Failed to save mind attributes component: {}", e))?;
@@ -1508,35 +1695,25 @@ impl PersistenceManager {
         world: &GameWorld,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
-        if let Ok(attrs) = world.get::<&SoulAttributes>(entity_id) {
+        if let Ok(attrs) = world.get::<&SoulAttributeScores>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_soul_attributes 
-                 (entity_id, score_offence, score_finesse, score_defence,
-                  health_current, health_maximum, health_regen,
-                  energy_current, energy_maximum, energy_regen)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                "INSERT INTO wyldlands.entity_soul_attributes
+                 (entity_id, score_offence, score_finesse, score_defence, health_current, energy_current)
+                 VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (entity_id)
                  DO UPDATE SET 
                     score_offence = EXCLUDED.score_offence,
                     score_finesse = EXCLUDED.score_finesse,
                     score_defence = EXCLUDED.score_defence,
                     health_current = EXCLUDED.health_current,
-                    health_maximum = EXCLUDED.health_maximum,
-                    health_regen = EXCLUDED.health_regen,
-                    energy_current = EXCLUDED.energy_current,
-                    energy_maximum = EXCLUDED.energy_maximum,
-                    energy_regen = EXCLUDED.energy_regen",
+                    energy_current = EXCLUDED.energy_current"
             )
             .bind(entity_uuid)
-            .bind(attrs.score_offence)
-            .bind(attrs.score_finesse)
-            .bind(attrs.score_defence)
-            .bind(attrs.health_current)
-            .bind(attrs.health_maximum)
-            .bind(attrs.health_regen)
-            .bind(attrs.energy_current)
-            .bind(attrs.energy_maximum)
-            .bind(attrs.energy_regen)
+            .bind(attrs.0.score_offence)
+            .bind(attrs.0.score_finesse)
+            .bind(attrs.0.score_defence)
+            .bind(attrs.0.health_current)
+            .bind(attrs.0.energy_current)
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("Failed to save soul attributes component: {}", e))?;
@@ -1553,29 +1730,59 @@ impl PersistenceManager {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
         if let Ok(skills) = world.get::<&Skills>(entity_id) {
-            // Delete existing skills
+            // Delete existing skills as you could lose some
             sqlx::query("DELETE FROM wyldlands.entity_skills WHERE entity_id = $1")
                 .bind(entity_uuid)
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| format!("Failed to delete old skills: {}", e))?;
 
-            // Insert all skills
-            for (skill_id, skill) in &skills.skills {
-                let skill_name = skill_id.to_string();
-                let level = skills.level(*skill_id);
+            // Insert all skill currently acquired
+            for (skill, _level, experience, knowledge) in skills.iter() {
                 sqlx::query(
-                    "INSERT INTO wyldlands.entity_skills (entity_id, skill_name, level, experience, knowledge)
-                     VALUES ($1, $2, $3, $4, $5)"
-                )
+                "INSERT INTO wyldlands.entity_skills (entity_id, skill_name, experience, knowledge)
+                     VALUES ($1, $2, $3, $4)"
+            )
                 .bind(entity_uuid)
-                .bind(&skill_name)
-                .bind(level)
-                .bind(skill.experience)
-                .bind(skill.knowledge)
+                .bind(skill.name())
+                .bind(experience)
+                .bind(knowledge)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| format!("Failed to save skill {}: {}", skill_name, e))?;
+                .map_err(|e| format!("Failed to save skill {}: {}", skill.name(), e))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Save Skills component
+    async fn save_talents_component(
+        &self,
+        entity_uuid: Uuid,
+        entity_id: EcsEntity,
+        world: &GameWorld,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), String> {
+        if let Ok(talents) = world.get::<&Talents>(entity_id) {
+            // Delete existing skills
+            sqlx::query("DELETE FROM wyldlands.entity_talents WHERE entity_id = $1")
+                .bind(entity_uuid)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| format!("Failed to delete old talents: {}", e))?;
+
+            // Insert all skills
+            for (talent, _rank, experience) in talents.iter() {
+                sqlx::query(
+                    "INSERT INTO wyldlands.entity_talents (entity_id, talent_name, experience)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind(entity_uuid)
+                .bind(talent.name())
+                .bind(experience)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| format!("Failed to save talent {}: {}", talent.name(), e))?;
             }
         }
         Ok(())
@@ -1615,7 +1822,7 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         if let Ok(combatant) = world.get::<&Combatant>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_combatant 
+                "INSERT INTO wyldlands.entity_combatant
                  (entity_id, in_combat, target_id, initiative, action_cooldown, time_since_action)
                  VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (entity_id)
@@ -1682,7 +1889,7 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         if let Ok(ai) = world.get::<&AIController>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_ai_controller 
+            "INSERT INTO wyldlands.entity_ai_controller
                  (entity_id, behavior_type, current_goal, state_type, state_target_id, update_interval, time_since_update)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT (entity_id)
@@ -1693,7 +1900,7 @@ impl PersistenceManager {
                     state_target_id = EXCLUDED.state_target_id,
                     update_interval = EXCLUDED.update_interval,
                     time_since_update = EXCLUDED.time_since_update"
-            )
+        )
             .bind(entity_uuid)
             .bind(ai.behavior_type.as_str())
             .bind(&ai.current_goal)
@@ -1718,11 +1925,11 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         if let Ok(personality) = world.get::<&Personality>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_personality (entity_id, background, speaking_style)
+            "INSERT INTO wyldlands.entity_personality (entity_id, background, speaking_style)
                  VALUES ($1, $2, $3)
                  ON CONFLICT (entity_id)
                  DO UPDATE SET background = EXCLUDED.background, speaking_style = EXCLUDED.speaking_style"
-            )
+        )
             .bind(entity_uuid)
             .bind(&personality.background)
             .bind(&personality.speaking_style)
@@ -1751,9 +1958,9 @@ impl PersistenceManager {
 
             sqlx::query(
                 "INSERT INTO wyldlands.entity_areas (entity_id, area_kind, area_flags)
-                 VALUES ($1, $2::area_kind, $3)
+                 VALUES ($1, $2::wyldlands.area_kind, $3::text[]::wyldlands.area_flag[])
                  ON CONFLICT (entity_id)
-                 DO UPDATE SET area_kind = EXCLUDED.area_kind, area_flags = EXCLUDED.area_flags"
+                 DO UPDATE SET area_kind = EXCLUDED.area_kind, area_flags = EXCLUDED.area_flags",
             )
             .bind(entity_uuid)
             .bind(area_kind_str)
@@ -1774,7 +1981,8 @@ impl PersistenceManager {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
         if let Ok(room) = world.get::<&Room>(entity_id) {
-            let room_flags_strs: Vec<String> = room.room_flags
+            let room_flags_strs: Vec<String> = room
+                .room_flags
                 .iter()
                 .map(|flag| match flag {
                     RoomFlag::Breathable => "Breathable".to_string(),
@@ -1783,9 +1991,9 @@ impl PersistenceManager {
 
             sqlx::query(
                 "INSERT INTO wyldlands.entity_rooms (entity_id, area_id, room_flags)
-                 VALUES ($1, $2, $3::room_flag[])
+                 VALUES ($1, $2, $3::wyldlands.room_flag[])
                  ON CONFLICT (entity_id)
-                 DO UPDATE SET area_id = EXCLUDED.area_id, room_flags = EXCLUDED.room_flags"
+                 DO UPDATE SET area_id = EXCLUDED.area_id, room_flags = EXCLUDED.room_flags",
             )
             .bind(entity_uuid)
             .bind(room.area_id.uuid())
@@ -1816,10 +2024,10 @@ impl PersistenceManager {
         if let Ok(exits) = world.get::<&Exits>(entity_id) {
             for exit in &exits.exits {
                 sqlx::query(
-                    "INSERT INTO wyldlands.entity_room_exits
+                "INSERT INTO wyldlands.entity_room_exits
                      (entity_id, dest_id, direction, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
-                )
+            )
                 .bind(entity_uuid)
                 .bind(exit.dest_id.uuid())
                 .bind(&exit.direction)
@@ -1850,7 +2058,7 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         if let Ok(container) = world.get::<&Container>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_container
+            "INSERT INTO wyldlands.entity_container
                  (entity_id, capacity, max_weight, closeable, closed, container_rating, lockable, locked, unlock_code, lock_rating, transparent)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                  ON CONFLICT (entity_id)
@@ -1865,7 +2073,7 @@ impl PersistenceManager {
                     unlock_code = EXCLUDED.unlock_code,
                     lock_rating = EXCLUDED.lock_rating,
                     transparent = EXCLUDED.transparent"
-            )
+        )
             .bind(entity_uuid)
             .bind(container.capacity)
             .bind(container.max_weight)
@@ -1902,11 +2110,11 @@ impl PersistenceManager {
             };
 
             sqlx::query(
-                "INSERT INTO wyldlands.entity_containable (entity_id, weight, size, stackable, stack_size)
-                 VALUES ($1, $2, $3::size_class, $4, $5)
+            "INSERT INTO wyldlands.entity_containable (entity_id, weight, size, stackable, stack_size)
+                 VALUES ($1, $2, $3::wyldlands.size_class, $4, $5)
                  ON CONFLICT (entity_id)
                  DO UPDATE SET weight = EXCLUDED.weight, size = EXCLUDED.size, stackable = EXCLUDED.stackable, stack_size = EXCLUDED.stack_size"
-            )
+        )
             .bind(entity_uuid)
             .bind(containable.weight)
             .bind(size_str)
@@ -1929,7 +2137,7 @@ impl PersistenceManager {
     ) -> Result<(), String> {
         if let Ok(enterable) = world.get::<&Enterable>(entity_id) {
             sqlx::query(
-                "INSERT INTO wyldlands.entity_enterable
+            "INSERT INTO wyldlands.entity_enterable
                  (entity_id, dest_id, closeable, closed, door_rating, lockable, locked, unlock_code, lock_rating, transparent)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                  ON CONFLICT (entity_id)
@@ -1943,7 +2151,7 @@ impl PersistenceManager {
                     unlock_code = EXCLUDED.unlock_code,
                     lock_rating = EXCLUDED.lock_rating,
                     transparent = EXCLUDED.transparent"
-            )
+        )
             .bind(entity_uuid)
             .bind(enterable.dest_id.uuid())
             .bind(enterable.closeable)
@@ -1970,13 +2178,17 @@ impl PersistenceManager {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), String> {
         if let Ok(equipable) = world.get::<&Equipable>(entity_id) {
-            let slot_strs: Vec<String> = equipable.slots.iter().map(|s| s.as_str().to_string()).collect();
+            let slot_strs: Vec<String> = equipable
+                .slots
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect();
 
             sqlx::query(
                 "INSERT INTO wyldlands.entity_equipable (entity_id, slots)
-                 VALUES ($1, $2::slot_kind[])
+                 VALUES ($1, $2::wyldlands.slot_kind[])
                  ON CONFLICT (entity_id)
-                 DO UPDATE SET slots = EXCLUDED.slots"
+                 DO UPDATE SET slots = EXCLUDED.slots",
             )
             .bind(entity_uuid)
             .bind(&slot_strs)
@@ -1999,7 +2211,7 @@ impl PersistenceManager {
             sqlx::query(
                 "INSERT INTO wyldlands.entity_weapon
                  (entity_id, damage_min, damage_max, damage_cap, damage_type, attack_speed, range)
-                 VALUES ($1, $2, $3, $4, $5::damage_type, $6, $7)
+                 VALUES ($1, $2, $3, $4, $5::wyldlands.damage_type, $6, $7)
                  ON CONFLICT (entity_id)
                  DO UPDATE SET
                     damage_min = EXCLUDED.damage_min,
@@ -2007,7 +2219,7 @@ impl PersistenceManager {
                     damage_cap = EXCLUDED.damage_cap,
                     damage_type = EXCLUDED.damage_type,
                     attack_speed = EXCLUDED.attack_speed,
-                    range = EXCLUDED.range"
+                    range = EXCLUDED.range",
             )
             .bind(entity_uuid)
             .bind(weapon.damage_min)
@@ -2036,7 +2248,7 @@ impl PersistenceManager {
                 "INSERT INTO wyldlands.entity_material (entity_id, material)
                  VALUES ($1, $2)
                  ON CONFLICT (entity_id)
-                 DO UPDATE SET material = EXCLUDED.material"
+                 DO UPDATE SET material = EXCLUDED.material",
             )
             .bind(entity_uuid)
             .bind(material.material_kind.as_str())
@@ -2067,14 +2279,16 @@ impl PersistenceManager {
             for (damage_kind, defense) in &armor_defense.defenses {
                 sqlx::query(
                     "INSERT INTO wyldlands.entity_armor_defense (entity_id, damage_kind, defense)
-                     VALUES ($1, $2::damage_type, $3)"
+                     VALUES ($1, $2::wyldlands.damage_type, $3)",
                 )
                 .bind(entity_uuid)
                 .bind(damage_kind.as_str())
                 .bind(defense)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| format!("Failed to save armor defense for {:?}: {}", damage_kind, e))?;
+                .map_err(|e| {
+                    format!("Failed to save armor defense for {:?}: {}", damage_kind, e)
+                })?;
             }
         }
         Ok(())
@@ -2093,7 +2307,7 @@ impl PersistenceManager {
                 "INSERT INTO wyldlands.entity_commandable (entity_id, max_queue_size)
                  VALUES ($1, $2)
                  ON CONFLICT (entity_id)
-                 DO UPDATE SET max_queue_size = EXCLUDED.max_queue_size"
+                 DO UPDATE SET max_queue_size = EXCLUDED.max_queue_size",
             )
             .bind(entity_uuid)
             .bind(commandable.max_queue_size as i32)
@@ -2116,7 +2330,7 @@ impl PersistenceManager {
             sqlx::query(
                 "INSERT INTO wyldlands.entity_interactable (entity_id)
                  VALUES ($1)
-                 ON CONFLICT (entity_id) DO NOTHING"
+                 ON CONFLICT (entity_id) DO NOTHING",
             )
             .bind(entity_uuid)
             .execute(&mut **tx)
@@ -2145,8 +2359,8 @@ impl PersistenceManager {
     /// Get list of avatars for an account
     pub async fn get_account_avatars(&self, account_id: Uuid) -> Result<Vec<(Uuid, bool)>, String> {
         let rows: Vec<(Uuid, bool)> = sqlx::query_as(
-            "SELECT entity_id, available FROM wyldlands.entity_avatars WHERE account_id = $1 ORDER BY last_played DESC NULLS LAST"
-        )
+        "SELECT entity_id, available FROM wyldlands.entity_avatars WHERE account_id = $1 ORDER BY last_played DESC NULLS LAST"
+    )
         .bind(account_id)
         .fetch_all(&self.pool)
         .await
@@ -2288,7 +2502,8 @@ impl PersistenceManager {
         entity_uuid: Uuid,
     ) -> Result<EntityId, String> {
         let ecs_entity = self.load_entity(world, registry, entity_uuid).await?;
-        registry.register(ecs_entity, entity_uuid)
+        registry
+            .register(ecs_entity, entity_uuid)
             .map_err(|e| format!("Failed to register entity in registry: {}", e))?;
         Ok(EntityId::new(ecs_entity, entity_uuid))
     }
@@ -2332,13 +2547,10 @@ impl PersistenceManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    // TODO: Write comprehensive tests for PersistenceManager
     #[test]
     fn test_persistence_manager_creation() {
         // Basic test to ensure the module compiles
         assert!(true);
     }
 }
-
-

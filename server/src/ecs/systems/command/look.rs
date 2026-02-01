@@ -121,8 +121,9 @@ pub async fn look_command(
         // Try to find the target in the current room
         if let Ok(loc) = world.get::<&Location>(entity) {
             let mut found = None;
-            for (other_entity, other_loc, other_name, other_desc) in
-                world.query::<(Entity, &Location, &Name, &Description)>().iter()
+            for (other_entity, other_loc, other_name, other_desc) in world
+                .query::<(Entity, &Location, &Name, &Description)>()
+                .iter()
             {
                 if other_entity != entity
                     && other_loc.room_id == loc.room_id

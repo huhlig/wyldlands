@@ -13,6 +13,10 @@ Documentation for Phase 1: Core ECS Implementation (Completed December 18, 2025)
 Documentation for Phase 2: Gateway & Connection Persistence (Completed December 19, 2025)
 - `PHASE2_IMPLEMENTATION.md` - Day-by-day implementation guide
 - `PHASE2_STATUS.md` - Progress tracking during development
+
+### Gateway-World Refactor
+Documentation for the Gateway-World layered state machine refactor (Completed February 1, 2026)
+- `GATEWAY_WORLD_REFACTOR.md` - Complete refactor implementation plan and status
 - `PHASE2_COMPLETE.md` - Completion summary and achievements
 
 ## Current Documentation

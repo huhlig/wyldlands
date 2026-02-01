@@ -51,7 +51,7 @@ docker-compose up postgres
 ### Start Database and World Server
 
 ```bash
-docker-compose up postgres worldserver
+docker-compose up database server
 ```
 
 ### Rebuild a Specific Service
@@ -71,8 +71,8 @@ docker-compose logs -f
 
 # Specific service
 docker-compose logs -f gateway
-docker-compose logs -f worldserver
-docker-compose logs -f postgres
+docker-compose logs -f server
+docker-compose logs -f database
 ```
 
 ### Execute Commands in Containers
@@ -82,7 +82,7 @@ docker-compose logs -f postgres
 docker-compose exec gateway /bin/bash
 
 # Access world server shell
-docker-compose exec worldserver /bin/bash
+docker-compose exec server /bin/bash
 
 # Access PostgreSQL
 docker-compose exec postgres psql -U postgres -d wyldlands
@@ -92,7 +92,7 @@ docker-compose exec postgres psql -U postgres -d wyldlands
 
 ```bash
 docker-compose restart gateway
-docker-compose restart worldserver
+docker-compose restart server
 ```
 
 ## Database Management
@@ -268,7 +268,7 @@ docker-compose exec postgres pg_isready -U postgres
 
 # Run tests
 docker-compose run --rm gateway cargo test
-docker-compose run --rm worldserver cargo test
+docker-compose run --rm server cargo test
 ```
 
 ## Monitoring

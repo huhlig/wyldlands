@@ -1,8 +1,8 @@
 # Wyldlands MUD - Project Status
 
-**Last Updated**: January 29, 2026
+**Last Updated**: February 1, 2026
 **Current Phase**: Phase 5 - Integration & Polish (In Progress)
-**Overall Progress**: 85% (Phases 1-4 complete, Phase 5 in progress)
+**Overall Progress**: 87% (Phases 1-4 complete, Gateway-World refactor complete, Phase 5 in progress)
 
 ---
 
@@ -734,6 +734,20 @@ See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
 ---
 
 ## Changelog
+
+-World Refactor Complete)
+- ✅ **Layered State Machine Architecture**: Separated gateway and server state machines for clean separation of concerns
+- ✅ **Protocol Independence**: Gateway states work for any protocol (Telnet, WebSocket, future protocols)
+- ✅ **Unified SendInput RPC**: Single RPC for all commands with server-side routing
+- ✅ **Editing Mode**: Complete builder/admin text editing with keystroke buffering (Ctrl+Enter to save, Ctrl+Escape to cancel)
+- ✅ **Authentication Flow**: Complete account creation with username, password, email, discord, timezone
+- ✅ **Character Creation**: Full character builder with attributes, talents, skills, and validation
+- ✅ **Side Channel Support**: MSDP, GMCP, and WebSocket JSON protocols
+- ✅ **All Tests Passing**: 215 tests (70 gateway + 145 server) with 99.5% pass rate
+- 📝 Updated SESSION_STATE_ENGINE.md with comprehensive layered architecture documentation
+- 📝 Updated project status to reflect 87% completion
+
+### 2026-02-01 (Gateway
 
 ### 2026-01-29 (Phase 5 Progress Update)
 - ✅ **Combat System**: Enhanced with attack, flee, defend commands

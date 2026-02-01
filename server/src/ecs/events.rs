@@ -18,10 +18,8 @@
 //!
 //! This module provides an event bus for loose coupling between systems.
 
-mod types;
 mod bus;
+mod types;
 
-pub use types::*;
 pub use bus::*;
-
-
+pub use types::*;

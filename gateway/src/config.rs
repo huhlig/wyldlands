@@ -72,12 +72,8 @@ pub struct Configuration {
     #[serde(default)]
     pub server: WorldServerConfig,
 
-    #[serde(default)]
-    pub database: DatabaseConfig,
-
-    pub telnet: Option<TelnetConfig>,
-    pub websocket: Option<WebsocketConfig>,
-    pub grpc: Option<GrpcConfig>,
+    pub telnet: Option<TelnetServerConfig>,
+    pub websocket: Option<WebsocketServerConfig>,
 }
 
 impl Configuration {
@@ -91,18 +87,6 @@ impl Configuration {
 
         Ok(conf)
     }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct DatabaseConfig {
-    #[serde(default)]
-    pub url: EnvField<String>,
-
-    #[serde(default)]
-    pub username: EnvField<String>,
-
-    #[serde(default)]
-    pub password: EnvField<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -191,7 +175,6 @@ impl WorldServerAuthKey {
 }
 
 impl From<&str> for WorldServerAuthKey {
-
     fn from(s: &str) -> Self {
         Self(s.to_string())
     }
@@ -217,12 +200,12 @@ impl std::fmt::Display for WorldServerAuthKey {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct TelnetConfig {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TelnetServerConfig {
     pub addr: EnvField<TelnetBinding>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelnetBinding(SocketAddr);
 
 impl TelnetBinding {
@@ -261,7 +244,7 @@ impl std::fmt::Display for TelnetBinding {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct WebsocketConfig {
+pub struct WebsocketServerConfig {
     pub addr: EnvField<WebsocketBinding>,
 }
 
@@ -303,49 +286,6 @@ impl std::fmt::Display for WebsocketBinding {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct GrpcConfig {
-    pub addr: EnvField<GrpcBinding>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GrpcBinding(SocketAddr);
-
-impl GrpcBinding {
-    pub fn to_addr(&self) -> SocketAddr {
-        self.0
-    }
-    pub fn to_ip(&self) -> IpAddr {
-        self.0.ip()
-    }
-    pub fn to_port(&self) -> u16 {
-        self.0.port()
-    }
-}
-
-impl FromStr for GrpcBinding {
-    type Err = AddrParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(SocketAddr::from_str(s)?))
-    }
-}
-
-impl Default for GrpcBinding {
-    fn default() -> Self {
-        Self(SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(0, 0, 0, 0),
-            5001,
-        )))
-    }
-}
-
-impl std::fmt::Display for GrpcBinding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,16 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn test_database_config_default() {
-        let config = DatabaseConfig::default();
-        assert_eq!(config.url.as_str(), "");
-        assert_eq!(config.username.as_str(), "");
-        assert_eq!(config.password.as_str(), "");
-    }
-
-    #[test]
     fn test_websocket_config_default() {
-        let config = WebsocketConfig::default();
+        let config = WebsocketServerConfig::default();
         assert_eq!(
             config.addr.to_addr(),
             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8080))
@@ -388,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_telnet_config_default() {
-        let config = TelnetConfig::default();
+        let config = TelnetServerConfig::default();
         assert_eq!(
             config.addr.to_addr(),
             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 4000))
@@ -407,8 +339,6 @@ mod tests {
 server:
   addr: 127.0.0.1:7000
   auth_key: test-auth-key
-database:
-  url: "postgres://localhost/db"
 telnet:
   addr: 127.0.0.1:4001
 websocket:
@@ -443,7 +373,6 @@ websocket:
                 .port(),
             7000
         );
-        assert_eq!(config.database.url.as_str(), "postgres://localhost/db");
         assert_eq!(config.telnet.unwrap().addr.to_port(), 4001);
         assert_eq!(config.websocket.unwrap().addr.to_port(), 8081);
     }
@@ -458,8 +387,6 @@ websocket:
 server:
   addr: "${{WYLDLANDS_SERVER_ADDR:-127.0.0.1:7000}}"
   auth_key: test-auth-key
-database:
-  url: "postgres://localhost/db"
 "#
         )
         .unwrap();
@@ -526,5 +453,3 @@ database:
         assert_eq!(addr.port(), 9000);
     }
 }
-
-

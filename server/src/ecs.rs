@@ -36,17 +36,14 @@ pub type EntityId = EcsEntity;
 /// Type alias for the game world
 pub type GameWorld = World;
 
-// Re-exports
-pub mod character_builder;
 pub mod components;
 pub mod events;
+pub mod memory;
 pub mod registry;
 pub mod systems;
 
 pub use registry::EntityRegistry;
-pub use character_builder::ServerCharacterBuilder;
 
 pub mod context;
 #[cfg(test)]
 pub mod test_utils;
-

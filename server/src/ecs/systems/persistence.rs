@@ -97,21 +97,21 @@ impl PersistenceSystem {
             );
         }
 
-        if let Ok(attrs) = world.get::<&BodyAttributes>(entity) {
+        if let Ok(attrs) = world.get::<&BodyAttributeScores>(entity) {
             components.insert(
                 "body_attributes".to_string(),
                 serde_json::to_value(&*attrs).unwrap(),
             );
         }
 
-        if let Ok(attrs) = world.get::<&MindAttributes>(entity) {
+        if let Ok(attrs) = world.get::<&MindAttributeScores>(entity) {
             components.insert(
                 "mind_attributes".to_string(),
                 serde_json::to_value(&*attrs).unwrap(),
             );
         }
 
-        if let Ok(attrs) = world.get::<&SoulAttributes>(entity) {
+        if let Ok(attrs) = world.get::<&SoulAttributeScores>(entity) {
             components.insert(
                 "soul_attributes".to_string(),
                 serde_json::to_value(&*attrs).unwrap(),
@@ -209,17 +209,17 @@ impl PersistenceSystem {
                     }
                 }
                 "body_attributes" => {
-                    if let Ok(attrs) = serde_json::from_value::<BodyAttributes>(value) {
+                    if let Ok(attrs) = serde_json::from_value::<BodyAttributeScores>(value) {
                         world.insert_one(entity, attrs).ok();
                     }
                 }
                 "mind_attributes" => {
-                    if let Ok(attrs) = serde_json::from_value::<MindAttributes>(value) {
+                    if let Ok(attrs) = serde_json::from_value::<MindAttributeScores>(value) {
                         world.insert_one(entity, attrs).ok();
                     }
                 }
                 "soul_attributes" => {
-                    if let Ok(attrs) = serde_json::from_value::<SoulAttributes>(value) {
+                    if let Ok(attrs) = serde_json::from_value::<SoulAttributeScores>(value) {
                         world.insert_one(entity, attrs).ok();
                     }
                 }
@@ -342,7 +342,7 @@ mod tests {
                     uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
                 ),
             ),
-            BodyAttributes::new(),
+            BodyAttributeScores::new(),
         ));
 
         // Serialize
@@ -372,8 +372,8 @@ mod tests {
             uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap()
         );
 
-        let attrs = new_world.get::<&BodyAttributes>(new_entity).unwrap();
-        assert_eq!(attrs.health_maximum, 100.0);
+        let attrs = new_world.get::<&BodyAttributeScores>(new_entity).unwrap();
+        assert_eq!(attrs.0.health_maximum, 100.0);
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
         let entity = world.spawn((
             EntityUuid::new(),
             Name::new("JSON Test"),
-            BodyAttributes::new(),
+            BodyAttributeScores::new(),
         ));
 
         // Save to JSON
@@ -430,9 +430,9 @@ mod tests {
                     uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap(),
                 ),
             ),
-            BodyAttributes::new(),
-            MindAttributes::new(),
-            SoulAttributes::new(),
+            BodyAttributeScores::default(),
+            MindAttributeScores::default(),
+            SoulAttributeScores::default(),
             Skills::new(),
             Combatant::new(),
             Equipment::new(),
@@ -446,9 +446,9 @@ mod tests {
         // Verify all components exist
         assert!(new_world.get::<&Name>(new_entity).is_ok());
         assert!(new_world.get::<&Location>(new_entity).is_ok());
-        assert!(new_world.get::<&BodyAttributes>(new_entity).is_ok());
-        assert!(new_world.get::<&MindAttributes>(new_entity).is_ok());
-        assert!(new_world.get::<&SoulAttributes>(new_entity).is_ok());
+        assert!(new_world.get::<&BodyAttributeScores>(new_entity).is_ok());
+        assert!(new_world.get::<&MindAttributeScores>(new_entity).is_ok());
+        assert!(new_world.get::<&SoulAttributeScores>(new_entity).is_ok());
         assert!(new_world.get::<&Skills>(new_entity).is_ok());
         assert!(new_world.get::<&Combatant>(new_entity).is_ok());
         assert!(new_world.get::<&Equipment>(new_entity).is_ok());

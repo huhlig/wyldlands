@@ -414,5 +414,3 @@ mod tests {
         assert!(directions.contains(&"up"));
     }
 }
-
-

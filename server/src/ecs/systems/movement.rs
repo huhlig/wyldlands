@@ -16,10 +16,10 @@
 
 //! Movement system for entity movement
 
-use hecs::Entity;
 use crate::ecs::components::{Commandable, EntityId, Exits, Location};
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::{EcsEntity, GameWorld};
+use hecs::Entity;
 
 pub struct MovementSystem {
     event_bus: EventBus,
@@ -129,7 +129,10 @@ impl MovementSystem {
             // Publish movement event
             self.event_bus.publish(GameEvent::EntityMoved {
                 entity,
-                from: (current_location.area_id.uuid(), current_location.room_id.uuid()),
+                from: (
+                    current_location.area_id.uuid(),
+                    current_location.room_id.uuid(),
+                ),
                 to: (new_location.area_id.uuid(), new_location.room_id.uuid()),
             });
 
@@ -308,7 +311,7 @@ mod tests {
 
         // Register the rooms in a temporary registry
         let mut registry = crate::ecs::registry::EntityRegistry::new();
-        registry.register(room1_entity, room1_id);
+        registry.register(room1_entity, room1_id).unwrap();
 
         // Get the EntityId for room1
         let room1_entity_id = registry.get_entity_id(room1_entity).unwrap();
@@ -345,7 +348,10 @@ mod tests {
         let new_area = uuid::Uuid::new_v4();
         let new_room = uuid::Uuid::new_v4();
 
-        let entity = world.spawn((Name::new("Test"), Location::new(EntityId::from_uuid(old_area), EntityId::from_uuid(old_room))));
+        let entity = world.spawn((
+            Name::new("Test"),
+            Location::new(EntityId::from_uuid(old_area), EntityId::from_uuid(old_room)),
+        ));
 
         let target = Location::new(EntityId::from_uuid(new_area), EntityId::from_uuid(new_room));
         assert!(system.teleport(&mut world, entity, target).is_ok());
@@ -418,5 +424,3 @@ mod tests {
         assert_eq!(location.room_id.uuid(), room);
     }
 }
-
-

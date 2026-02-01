@@ -307,7 +307,7 @@ make up
 
 ```bash
 $ cargo build --release
-   Compiling wyldlands-protocol v0.0.1
+   Compiling wyldlands-server v0.0.1
    Compiling wyldlands-gateway v0.0.1
    Compiling wyldlands-worldserver v0.0.1
     Finished `release` profile [optimized] target(s)

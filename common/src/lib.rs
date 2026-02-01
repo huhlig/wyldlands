@@ -17,25 +17,29 @@
 //! Wyldlands Common Types and Protocols
 //!
 //! This crate defines shared types and communication protocols used across Wyldlands MUD:
-//! - Common data types (Account, Avatar, Session)
-//! - Gateway-to-Server RPC protocol (gRPC)
-//! - MUD Server Data Protocol (MSDP)
+//! - Gateway-to-Server RPC server (gRPC)
+//! - Shared type aliases for RPC communication
+//! - Utility functions
 
-pub mod account;
-pub mod character;
 pub mod gateway;
-pub mod msdp;
-pub mod session;
 pub mod utility;
 
 // gRPC generated code
 pub mod proto {
+    use tonic::transport::Channel;
+
     tonic::include_proto!("wyldlands.gateway");
+
+    pub use gateway_management_server::GatewayManagement;
+    pub use gateway_management_server::GatewayManagementServer;
+    pub use session_to_world_server::SessionToWorld;
+    pub use session_to_world_server::SessionToWorldServer;
+    pub use world_to_session_server::WorldToSession;
+    pub use world_to_session_server::WorldToSessionServer;
+    pub type GatewayManagementClient = gateway_management_client::GatewayManagementClient<Channel>;
+    pub type SessionToWorldClient = session_to_world_client::SessionToWorldClient<Channel>;
+    pub type WorldToSessionClient = world_to_session_client::WorldToSessionClient<Channel>;
 }
-
-// Mudnet protocol removed - using gRPC now
-
-
 
 #[cfg(test)]
 mod tests {

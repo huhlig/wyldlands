@@ -17,18 +17,44 @@
 //! Character components for stats, health, and progression
 
 mod attributes;
-mod skill;
+pub mod builder;
+mod macros;
+mod nationality;
+mod skills;
+mod talents;
 
-pub use self::attributes::{BodyAttributes, MindAttributes, SoulAttributes};
-pub use self::skill::{
-    SKILL_REGISTRY, Skill, SkillCategory, SkillDefinition, SkillDifficulty, SkillId, Skills,
+pub use self::attributes::{
+    AttributeClass, AttributeScores, AttributeType, BodyAttributeScores, MindAttributeScores,
+    SoulAttributeScores, chargen_attribute_cost, chargen_total_attribute_cost,
 };
+pub use self::builder::CharacterBuilder;
+pub use self::nationality::Nationality;
+pub use self::skills::{
+    Skill, SkillCategory, SkillDifficulty, SkillEntry, Skills, chargen_skill_cost,
+    chargen_total_skill_cost, skill_experience_floor_for_level, skill_knowledge_cap_for_level,
+    skill_level_from_experience,
+};
+pub use self::talents::{
+    Talent, TalentCategory, TalentEntry, Talents, talent_experience_floor_for_rank,
+    talent_rank_from_experience,
+};
+use serde::{Deserialize, Serialize};
 
-// Re-export shared character builder types from common
-pub use wyldlands_common::character::{
-    AttributeType, CharacterBuilder, StartingLocation, Talent,
-    attribute_cost, skill_cost, total_attribute_cost, total_skill_cost,
-};
+/// Indicates Entity Has a Memory, See [`MemoryResource`] for details
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Memory;
+
+impl Memory {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -36,7 +62,7 @@ mod tests {
 
     #[test]
     fn test_body_attributes() {
-        let attrs = BodyAttributes::new();
+        let attrs = AttributeScores::new();
         assert_eq!(attrs.score_offence, 10);
         assert_eq!(attrs.health_maximum, 100.0);
     }
@@ -44,26 +70,17 @@ mod tests {
     #[test]
     fn test_skills() {
         let mut skills = Skills::new();
-        skills.set(
-            SkillId::Swordsmanship,
-            Skill {
-                experience: 0,
-                knowledge: 0,
-            },
-        );
+        skills.add_skill(Skill::Swordsmanship, 0, 0);
 
         // Add experience and check level calculation
         // Swordsmanship is Moderate difficulty (base XP = 20)
         // Level formula: L = min(floor(sqrt(XP/Diff)), 10)
-        skills.improve(SkillId::Swordsmanship, 80); // Total: 80
-        let skill = skills.get(SkillId::Swordsmanship).unwrap();
-        assert_eq!(skills.level(SkillId::Swordsmanship), 4); // floor(sqrt(80/4)) = floor(4.47) = 4
-        assert_eq!(skill.experience, 80);
+        skills.improve(Skill::Swordsmanship, 80); // Total: 80
+        assert_eq!(skills.get_experience(Skill::Swordsmanship).unwrap(), 80);
+        assert_eq!(skills.level(Skill::Swordsmanship), 4); // floor(sqrt(80/4)) = floor(4.47) = 4
 
         // Test level cap at 10
-        skills.improve(SkillId::Swordsmanship, 2000); // Total: 2080
-        assert_eq!(skills.level(SkillId::Swordsmanship), 10); // Capped at 10
+        skills.improve(Skill::Swordsmanship, 2000); // Total: 2080
+        assert_eq!(skills.level(Skill::Swordsmanship), 10); // Capped at 10
     }
 }
-
-

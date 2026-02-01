@@ -5,21 +5,23 @@ FROM rust:slim AS builder
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    build-essential \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
-COPY common ./common
-COPY gateway ./gateway
-COPY server ./server
+COPY Cargo.toml ./
+COPY common     ./common
+COPY gateway    ./gateway
+COPY server     ./server
 
 # Build the gateway from workspace root
 RUN cargo build --release --bin wyldlands-gateway
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -32,13 +34,8 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /app/target/release/wyldlands-gateway /app/wyldlands-gateway
 
-# Copy gateway web assets
-COPY gateway/src/webapp/client.html /app/client.html
-COPY gateway/src/webapp/client.css /app/client.css
-COPY gateway/src/webapp/client.js /app/client.js
-
 # Copy configuration
-COPY gateway/config.yaml /app/config.yaml
+COPY --from=builder /app/gateway/config.yaml /app/config.yaml
 
 # Expose ports
 EXPOSE 4000 8080

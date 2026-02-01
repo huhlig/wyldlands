@@ -1,0 +1,150 @@
+:root {
+    --bg-color: #121212;
+    --panel-bg: #1e1e1e;
+    --text-color: #e0e0e0;
+    --accent-color: #00bcd4;
+    --success-color: #4caf50;
+    --error-color: #f44336;
+    --border-color: #333;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    margin: 0;
+    padding: 20px;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid var(--accent-color);
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+}
+
+h1, h2, h3 {
+    margin: 0;
+    color: var(--accent-color);
+}
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    grid-template-rows: auto auto;
+    gap: 20px;
+}
+
+.panel {
+    background-color: var(--panel-bg);
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+#sessions-section {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+}
+
+.stats-cards {
+    display: flex;
+    gap: 10px;
+    margin: 20px 0;
+}
+
+.stat-card {
+    flex: 1;
+    background: #252525;
+    padding: 15px;
+    border-radius: 6px;
+    text-align: center;
+    border: 1px solid var(--border-color);
+}
+
+.stat-card label {
+    display: block;
+    font-size: 0.8em;
+    color: #888;
+    margin-bottom: 5px;
+}
+
+.stat-card .value {
+    font-size: 1.5em;
+    font-weight: bold;
+    color: var(--accent-color);
+}
+
+.sub-panel {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid var(--border-color);
+}
+
+.table-container {
+    overflow-x: auto;
+    margin-top: 15px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+th {
+    background-color: #252525;
+    color: var(--accent-color);
+}
+
+tr:hover {
+    background-color: #2a2a2a;
+}
+
+.btn-primary {
+    background-color: var(--accent-color);
+    color: #000;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.btn-danger {
+    background-color: var(--error-color);
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+textarea {
+    width: 100%;
+    background: #252525;
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    padding: 10px;
+    border-radius: 4px;
+    margin: 10px 0;
+    min-height: 80px;
+    box-sizing: border-box;
+}
+
+#health-value.ok { color: var(--success-color); }
+#health-value.error { color: var(--error-color); }
+
+footer {
+    margin-top: 40px;
+    text-align: center;
+    color: #666;
+    font-size: 0.9em;
+}

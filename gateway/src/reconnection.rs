@@ -15,13 +15,15 @@
 //
 
 //! Reconnection handling for seamless session recovery
-//! 
+//!
 //! This module provides functionality for clients to reconnect to existing
 //! sessions after disconnection, with command queue replay and state recovery.
 
 use crate::context::ServerContext;
-use crate::session::{SessionState, ProtocolType};
+use crate::session::{AuthenticatedState, ProtocolType, SessionState};
 use base64::{Engine as _, engine::general_purpose};
+use metrics::counter;
+use tracing::{Level, event};
 use uuid::Uuid;
 
 /// Reconnection token for session recovery
@@ -29,10 +31,10 @@ use uuid::Uuid;
 pub struct ReconnectionToken {
     /// Session ID to reconnect to
     pub session_id: Uuid,
-    
+
     /// Secret token for authentication
     pub secret: String,
-    
+
     /// Token expiration timestamp
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
@@ -41,48 +43,49 @@ impl ReconnectionToken {
     /// Create a new reconnection token
     pub fn new(session_id: Uuid, ttl_seconds: i64) -> Self {
         use rand::Rng;
-        
+
         // Generate random secret
         let secret: String = rand::rng()
             .sample_iter(&rand::distr::Alphanumeric)
             .take(32)
             .map(char::from)
             .collect();
-        
+
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_seconds);
-        
+
         Self {
             session_id,
             secret,
             expires_at,
         }
     }
-    
+
     /// Check if token is expired
     pub fn is_expired(&self) -> bool {
         chrono::Utc::now() > self.expires_at
     }
-    
+
     /// Encode token to string (base64)
     pub fn encode(&self) -> Result<String, String> {
-        let json = serde_json::to_string(self)
-            .map_err(|e| format!("Failed to serialize token: {}", e))?;
-        
+        let json =
+            serde_json::to_string(self).map_err(|e| format!("Failed to serialize token: {}", e))?;
+
         Ok(general_purpose::STANDARD.encode(json))
     }
-    
+
     /// Decode token from string (base64)
     pub fn decode(encoded: &str) -> Result<Self, String> {
-        let json = general_purpose::STANDARD.decode(encoded)
+        let json = general_purpose::STANDARD
+            .decode(encoded)
             .map_err(|e| format!("Failed to decode token: {}", e))?;
-        
+
         let token: Self = serde_json::from_slice(&json)
             .map_err(|e| format!("Failed to deserialize token: {}", e))?;
-        
+
         if token.is_expired() {
             return Err("Token expired".to_string());
         }
-        
+
         Ok(token)
     }
 }
@@ -101,72 +104,131 @@ impl ReconnectionManager {
             token_ttl_seconds,
         }
     }
-    
+
     /// Generate reconnection token for a session
     pub async fn generate_token(&self, session_id: Uuid) -> Result<ReconnectionToken, String> {
         // Verify session exists
-        let session = self.context
+        let session = self
+            .context
             .session_manager()
             .get_session(session_id)
             .await
             .ok_or_else(|| "Session not found".to_string())?;
-        
-        // Only generate tokens for playing or disconnected sessions
-        if session.state != SessionState::Playing && session.state != SessionState::Disconnected {
+
+        // Only generate tokens for authenticated or disconnected sessions
+        if !session.state.is_authenticated() && !session.state.is_disconnected() {
             return Err("Session not in reconnectable state".to_string());
         }
-        
+
+        // Record metrics
+        counter!("gateway_reconnection_tokens_generated_total").increment(1);
+        event!(
+            Level::DEBUG,
+            metric = "reconnection_token_generated",
+            "Reconnection token generated"
+        );
+
         Ok(ReconnectionToken::new(session_id, self.token_ttl_seconds))
     }
-    
+
     /// Attempt to reconnect to a session
     pub async fn reconnect(
         &self,
         token: &ReconnectionToken,
         _protocol: ProtocolType,
     ) -> Result<ReconnectionResult, String> {
+        // Record attempt
+        counter!("gateway_reconnection_attempts_total").increment(1);
+        event!(
+            Level::INFO,
+            metric = "reconnection_attempt",
+            "Reconnection attempt"
+        );
+
         // Verify token is not expired
         if token.is_expired() {
+            counter!("gateway_reconnection_failures_total", "reason" => "token_expired")
+                .increment(1);
+            event!(
+                Level::WARN,
+                reason = "token_expired",
+                metric = "reconnection_failure",
+                "Reconnection failed"
+            );
             return Err("Reconnection token expired".to_string());
         }
-        
+
         // Get session
-        let session = self.context
+        let session = self
+            .context
             .session_manager()
             .get_session(token.session_id)
             .await
-            .ok_or_else(|| "Session not found".to_string())?;
-        
+            .ok_or_else(|| {
+                counter!("gateway_reconnection_failures_total", "reason" => "session_not_found")
+                    .increment(1);
+                event!(
+                    Level::WARN,
+                    reason = "session_not_found",
+                    metric = "reconnection_failure",
+                    "Reconnection failed"
+                );
+                "Session not found".to_string()
+            })?;
+
         // Verify session is in reconnectable state
         if session.state != SessionState::Disconnected {
-            return Err(format!("Session in non-reconnectable state: {:?}", session.state))?;
+            counter!("gateway_reconnection_failures_total", "reason" => "invalid_state")
+                .increment(1);
+            event!(
+                Level::WARN,
+                reason = "invalid_state",
+                metric = "reconnection_failure",
+                "Reconnection failed"
+            );
+            return Err(format!(
+                "Session in non-reconnectable state: {:?}",
+                session.state
+            ))?;
         }
-        
+
         // Get queued commands
-        let queued_commands = self.context
+        let queued_commands = self
+            .context
             .session_manager()
             .get_and_clear_queued_commands(token.session_id)
             .await?;
-        
+
         // Transition session back to playing
         self.context
             .session_manager()
-            .transition_session(token.session_id, SessionState::Playing)
+            .transition_session(
+                token.session_id,
+                SessionState::Authenticated(AuthenticatedState::Playing),
+            )
             .await?;
-        
+
         tracing::info!(
             "Session {} reconnected with {} queued commands",
             token.session_id,
             queued_commands.len()
         );
-        
+
+        // Record success
+        counter!("gateway_reconnection_success_total").increment(1);
+        event!(
+            Level::INFO,
+            metric = "reconnection_success",
+            "Reconnection successful"
+        );
+
         Ok(ReconnectionResult {
             session_id: token.session_id,
             queued_commands,
             session_state: session,
         })
     }
-    
+
     /// Handle disconnection and prepare for reconnection
     pub async fn prepare_reconnection(
         &self,
@@ -177,43 +239,43 @@ impl ReconnectionManager {
             .session_manager()
             .transition_session(session_id, SessionState::Disconnected)
             .await?;
-        
+
         // Generate reconnection token
         self.generate_token(session_id).await
     }
-    
+
     /// Queue command for disconnected session
-    pub async fn queue_command(
-        &self,
-        session_id: Uuid,
-        command: &str,
-    ) -> Result<(), String> {
+    pub async fn queue_command(&self, session_id: Uuid, command: &str) -> Result<(), String> {
         self.context
             .session_manager()
             .queue_command(session_id, command)
             .await
     }
-    
+
     /// Validate a reconnection token and return the session ID
     pub async fn validate_token(&self, encoded: &str) -> Result<Uuid, String> {
         // Decode token
         let token = ReconnectionToken::decode(encoded)?;
-        
+
         // Verify session exists
-        let session = self.context
+        let session = self
+            .context
             .session_manager()
             .get_session(token.session_id)
             .await
             .ok_or_else(|| "Session not found".to_string())?;
-        
+
         // Verify session is in reconnectable state
-        if session.state != SessionState::Disconnected && session.state != SessionState::Playing {
-            return Err(format!("Session in non-reconnectable state: {:?}", session.state));
+        if !session.state.is_disconnected() && !session.state.is_authenticated() {
+            return Err(format!(
+                "Session in non-reconnectable state: {:?}",
+                session.state
+            ));
         }
-        
+
         Ok(token.session_id)
     }
-    
+
     /// Get queued commands for a session
     pub async fn get_queued_commands(&self, session_id: Uuid) -> Result<Vec<String>, String> {
         self.context
@@ -228,76 +290,75 @@ impl ReconnectionManager {
 pub struct ReconnectionResult {
     /// Reconnected session ID
     pub session_id: Uuid,
-    
+
     /// Commands queued during disconnection
     pub queued_commands: Vec<String>,
-    
+
     /// Session state
-    pub session_state: crate::session::Session,
+    pub session_state: crate::session::GatewaySession,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_reconnection_token_creation() {
         let session_id = Uuid::new_v4();
         let token = ReconnectionToken::new(session_id, 3600);
-        
+
         assert_eq!(token.session_id, session_id);
         assert_eq!(token.secret.len(), 32);
         assert!(!token.is_expired());
     }
-    
+
     #[test]
     fn test_reconnection_token_expiration() {
         let session_id = Uuid::new_v4();
         let mut token = ReconnectionToken::new(session_id, 3600);
-        
+
         // Not expired
         assert!(!token.is_expired());
-        
+
         // Set to past
         token.expires_at = chrono::Utc::now() - chrono::Duration::seconds(1);
         assert!(token.is_expired());
     }
-    
+
     #[test]
     fn test_reconnection_token_encode_decode() {
         let session_id = Uuid::new_v4();
         let token = ReconnectionToken::new(session_id, 3600);
-        
+
         // Encode
         let encoded = token.encode().expect("Failed to encode");
         assert!(!encoded.is_empty());
-        
+
         // Decode
         let decoded = ReconnectionToken::decode(&encoded).expect("Failed to decode");
         assert_eq!(decoded.session_id, token.session_id);
         assert_eq!(decoded.secret, token.secret);
     }
-    
+
     #[test]
     fn test_reconnection_token_decode_expired() {
         let session_id = Uuid::new_v4();
         let mut token = ReconnectionToken::new(session_id, 3600);
-        
+
         // Set to past
         token.expires_at = chrono::Utc::now() - chrono::Duration::seconds(1);
-        
+
         let encoded = token.encode().expect("Failed to encode");
-        
+
         // Should fail due to expiration
         let result = ReconnectionToken::decode(&encoded);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("expired"));
     }
-    
+
     #[test]
     fn test_reconnection_token_decode_invalid() {
         let result = ReconnectionToken::decode("invalid-base64!");
         assert!(result.is_err());
     }
 }
-

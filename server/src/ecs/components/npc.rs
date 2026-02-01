@@ -16,6 +16,7 @@
 
 //! NPC-specific components
 
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -121,7 +122,7 @@ impl NpcDialogue {
             None
         } else {
             use rand::Rng;
-            let idx = rand::rng().gen_range(0..self.fallback_responses.len());
+            let idx = rand::rng().random_range(0..self.fallback_responses.len());
             Some(&self.fallback_responses[idx])
         }
     }
@@ -348,8 +349,9 @@ mod tests {
 
         assert_eq!(template.id, "guard");
         assert!(template.dialogue_config.is_some());
-        assert_eq!(template.properties.get("faction"), Some(&"town_guard".to_string()));
+        assert_eq!(
+            template.properties.get("faction"),
+            Some(&"town_guard".to_string())
+        );
     }
 }
-
-
