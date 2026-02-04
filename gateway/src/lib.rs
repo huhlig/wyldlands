@@ -17,7 +17,7 @@
 //! Wyldlands Gateway Library
 //!
 //! This library provides the core functionality for the Wyldlands gateway server,
-//! including session management, connection pooling, and protocol adapters.
+//! including session management, connection pooling, and sidechannel adapters.
 
 //pub mod auth;
 pub mod properties;
@@ -25,7 +25,7 @@ pub mod config;
 pub mod context;
 pub mod grpc;
 pub mod pool;
-pub mod protocol;
+pub mod sidechannel;
 pub mod reconnection;
 pub mod server;
 pub mod session;
@@ -34,7 +34,7 @@ pub mod session;
 pub use context::ServerContext;
 pub use grpc::{GatewayRpcServer, RpcClientManager};
 pub use pool::ConnectionPool;
-pub use protocol::msdp;
+pub use sidechannel::msdp;
 pub use reconnection::{ReconnectionManager, ReconnectionToken};
 pub use session::{GatewaySession, ProtocolType, SessionState};
 

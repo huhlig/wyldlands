@@ -21,6 +21,7 @@ use crate::ecs::context::WorldContext;
 use crate::models::{LLMMessage, LLMRequest, ModelManager};
 use hecs::Entity;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// NPC AI system for updating NPC behavior
 pub struct NpcAiSystem {
@@ -34,6 +35,7 @@ impl NpcAiSystem {
     }
 
     /// Update all NPCs
+    #[instrument(skip(self, context))]
     pub async fn update(&self, context: Arc<WorldContext>, delta_time: f32) {
         let world = context.entities().read().await;
 
@@ -150,6 +152,7 @@ impl NpcAiSystem {
     }
 
     /// Handle NPC dialogue using LLM
+    #[instrument(skip(self, context))]
     pub async fn handle_dialogue(
         &self,
         context: Arc<WorldContext>,

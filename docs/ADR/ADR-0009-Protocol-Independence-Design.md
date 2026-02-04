@@ -165,13 +165,13 @@ pub trait ProtocolAdapter: Send + Sync {
     /// Format output for client
     async fn send_output(&mut self, output: &GameOutput) -> Result<Vec<u8>>;
     
-    /// Handle protocol negotiation
+    /// Handle sidechannel negotiation
     async fn negotiate(&mut self) -> Result<()>;
     
-    /// Get protocol capabilities
+    /// Get sidechannel capabilities
     fn capabilities(&self) -> ProtocolCapabilities;
     
-    /// Get protocol type
+    /// Get sidechannel type
     fn protocol_type(&self) -> ProtocolType;
 }
 
@@ -198,7 +198,7 @@ pub struct TelnetAdapter {
 #[async_trait]
 impl ProtocolAdapter for TelnetAdapter {
     async fn handle_input(&mut self, data: &[u8]) -> Result<Vec<String>> {
-        // Parse Telnet protocol (IAC commands, ANSI codes)
+        // Parse Telnet sidechannel (IAC commands, ANSI codes)
         let events = self.codec.decode(data)?;
         
         let mut commands = Vec::new();
@@ -231,7 +231,7 @@ impl ProtocolAdapter for TelnetAdapter {
             output.text.clone()
         };
         
-        // Encode as Telnet protocol
+        // Encode as Telnet sidechannel
         self.codec.encode(&formatted)
     }
     
@@ -270,7 +270,7 @@ impl ProtocolAdapter for WebSocketAdapter {
                 }
             }
             Message::Binary(data) => {
-                // Binary protocol (future)
+                // Binary sidechannel (future)
                 self.handle_binary_command(&data)
             }
             Message::Ping(_) => {
@@ -338,7 +338,7 @@ let output = GameOutput {
     channel: None,
 };
 
-// Gateway adapter formats for specific protocol
+// Gateway adapter formats for specific sidechannel
 ```
 
 ### Input Processing Flow
@@ -505,7 +505,7 @@ The protocol independence design is validated by:
 
 ### References
 
-- Protocol Adapter Trait: [gateway/src/protocol/mod.rs](../../gateway/src/protocol/mod.rs)
-- Telnet Adapter: [gateway/src/protocol/telnet.rs](../../gateway/src/protocol/telnet.rs)
+- Protocol Adapter Trait: [gateway/src/protocol/mod.rs](../../gateway/src/sidechannel/mod.rs)
+- Telnet Adapter: [gateway/src/protocol/telnet.rs](../../gateway/src/sidechannel/telnet.rs)
 - WebSocket Handler: [gateway/src/server/websocket/handler.rs](../../gateway/src/server/websocket/handler.rs)
 - Architecture Documentation: [docs/development/PROTOCOL_ADAPTER_ARCHITECTURE.md](../development/PROTOCOL_ADAPTER_ARCHITECTURE.md)

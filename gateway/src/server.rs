@@ -73,6 +73,15 @@ pub enum NegotiationData {
     GMCP(String),
 }
 
+/// Input mode for protocol adapters
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// Line-buffered input (default)
+    Line,
+    /// Character-by-character input
+    Character,
+}
+
 /// Protocol adapter trait
 ///
 /// Implementations of this trait handle server-specific details and
@@ -91,8 +100,17 @@ pub trait ProtocolAdapter: Send {
     /// Send a line of text (with appropriate line ending)
     async fn send_line(&mut self, text: &str) -> Result<(), ProtocolError>;
 
-    /// Receive a message from the client
+    /// Flush any buffered output to ensure it's sent immediately
+    async fn flush(&mut self) -> Result<(), ProtocolError> {
+        // Default implementation: no-op (some protocols may not need explicit flushing)
+        Ok(())
+    }
+
+    /// Receives a message from the client
     async fn receive(&mut self) -> Result<Option<ProtocolMessage>, ProtocolError>;
+
+    /// Set the input mode for the adapter (line or character buffered)
+    fn set_input_mode(&mut self, _mode: InputMode) {}
 
     /// Close the connection
     async fn close(&mut self) -> Result<(), ProtocolError>;

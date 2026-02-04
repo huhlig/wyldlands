@@ -25,7 +25,11 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tonic::transport::Channel;
 use tracing::{Level, event};
-use wyldlands_common::proto::{AuthenticateGatewayRequest, AuthenticateSessionRequest, CheckUsernameRequest, CreateAccountRequest, GatewayHeartbeatRequest, GatewayManagementClient, SendInputRequest, ServerStatisticsRequest, SessionToWorldClient};
+use wyldlands_common::proto::{
+    AuthenticateGatewayRequest, AuthenticateSessionRequest, CheckUsernameRequest,
+    CreateAccountRequest, GatewayHeartbeatRequest, GatewayManagementClient, SendInputRequest,
+    ServerStatisticsRequest, SessionToWorldClient,
+};
 
 /// RPC client state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,40 +263,44 @@ impl RpcClientManager {
             );
 
             if let Some(mut client) = self.session_client().await {
-                let request = SendInputRequest {
-                    session_id: queued_cmd.session_id.clone(),
-                    command: queued_cmd.command.clone(),
-                };
+                loop {
+                    let request = SendInputRequest {
+                        session_id: queued_cmd.session_id.clone(),
+                        command: queued_cmd.command.clone(),
+                    };
 
-                match client.send_input(request).await {
-                    Ok(response) => {
-                        let resp = response.into_inner();
-                        if resp.success {
-                            let mut processed = self.processed_count.write().await;
-                            *processed += 1;
-                            tracing::debug!(
-                                "Successfully processed queued command for session {}",
-                                queued_cmd.session_id
-                            );
-                        } else {
-                            let error_msg =
-                                resp.error.unwrap_or_else(|| "Unknown error".to_string());
-                            tracing::warn!(
-                                "Queued command failed for session {}: {}",
-                                queued_cmd.session_id,
-                                error_msg
-                            );
+                    match client.send_input(request).await {
+                        Ok(response) => {
+                            let resp = response.into_inner();
+                            if resp.success {
+                                let mut processed = self.processed_count.write().await;
+                                *processed += 1;
+                                tracing::debug!(
+                                    "Successfully processed queued command for session {}",
+                                    queued_cmd.session_id
+                                );
+                            } else {
+                                let error_msg =
+                                    resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                                tracing::warn!(
+                                    "Queued command failed for session {}: {}",
+                                    queued_cmd.session_id,
+                                    error_msg
+                                );
+                            }
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "RPC error processing queued command for session {}: {}",
-                            queued_cmd.session_id,
-                            e
-                        );
-                        // Re-queue the command and stop processing
-                        queue.push_front(queued_cmd);
-                        break;
+                        Err(e) => {
+                            tracing::error!(
+                                "RPC error processing queued command for session {}: {}",
+                                queued_cmd.session_id,
+                                e
+                            );
+                            // Re-queue the command and stop processing
+                            queue.push_front(queued_cmd);
+                            // TODO: Brute force Reconnect, discard old channel and recreate
+                            // client = new_client().await?;
+                            break;
+                        }
                     }
                 }
             } else {
@@ -340,8 +348,8 @@ impl RpcClientManager {
                 let endpoint = endpoint
                     .timeout(Duration::from_secs(5))
                     .connect_timeout(Duration::from_secs(5))
-                    .tcp_keepalive(Some(Duration::from_secs(30)))
-                    .http2_keep_alive_interval(Duration::from_secs(30))
+                    .tcp_keepalive(Some(Duration::from_secs(10)))
+                    .http2_keep_alive_interval(Duration::from_secs(5))
                     .keep_alive_timeout(Duration::from_secs(10))
                     .initial_connection_window_size(Some(1024 * 1024))
                     .initial_stream_window_size(Some(1024 * 1024));
@@ -486,8 +494,8 @@ impl RpcClientManager {
                         self.reconnect_interval
                     );
 
-                    // Attempt to connect
-                    match self.connect().await {
+                    // Attempt to reconnect (which clears old channel and creates new one)
+                    match self.reconnect().await {
                         Ok(()) => {
                             // Reset attempt counter on successful connection
                             attempt = 0;
@@ -499,22 +507,6 @@ impl RpcClientManager {
                         }
                         Err(e) => {
                             tracing::warn!("Reconnection attempt {} failed: {}", attempt, e);
-
-                            // Clear any existing clients to force a fresh connection next time
-                            {
-                                let mut gw_client = self.gateway_client.write().await;
-                                *gw_client = None;
-                            }
-                            {
-                                let mut sess_client = self.session_client.write().await;
-                                *sess_client = None;
-                            }
-
-                            // Reset state to Disconnected to allow next retry
-                            {
-                                let mut state = self.state.write().await;
-                                *state = ClientState::Disconnected;
-                            }
 
                             // Wait before next retry after failed connection
                             sleep(self.reconnect_interval).await;
@@ -553,6 +545,113 @@ impl RpcClientManager {
             *state = ClientState::Disconnected;
         }
     }
+
+    /// Reconnect to the server by throwing away the old channel and creating a new one
+    ///
+    /// This function will:
+    /// 1. Disconnect from the server (clearing old clients)
+    /// 2. Attempt to reconnect with a fresh channel
+    /// 3. Return success/failure transparently
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Successfully reconnected
+    /// * `Err(String)` - Failed to reconnect with error message
+    pub async fn reconnect(&self) -> Result<(), String> {
+        tracing::info!("Reconnecting to server (throwing away old channel)");
+
+        // First, disconnect to clear the old channel
+        self.disconnect().await;
+
+        // Record reconnection attempt
+        counter!("gateway_rpc_reconnection_attempts").increment(1);
+        event!(
+            Level::INFO,
+            metric = "rpc_reconnection_attempt",
+            "RPC reconnection attempt"
+        );
+
+        // Attempt to connect with a fresh channel
+        match self.connect().await {
+            Ok(()) => {
+                tracing::info!("Reconnection successful");
+                counter!("gateway_rpc_reconnection_success").increment(1);
+                event!(
+                    Level::INFO,
+                    metric = "rpc_reconnection_success",
+                    "RPC reconnection successful"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Reconnection failed: {}", e);
+                counter!("gateway_rpc_reconnection_failures").increment(1);
+                event!(
+                    Level::ERROR,
+                    error = %e,
+                    metric = "rpc_reconnection_failure",
+                    "RPC reconnection failed"
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Send input and return the full response (for retrieving queued events)
+    pub async fn send_input_with_response(
+        &self,
+        session_id: String,
+        command: String,
+    ) -> Result<wyldlands_common::proto::SendInputResponse, String> {
+        let start = Instant::now();
+
+        if let Some(mut client) = self.session_client().await {
+            let request = SendInputRequest {
+                session_id: session_id.clone(),
+                command: command.clone(),
+            };
+
+            match client.send_input(request).await {
+                Ok(response) => {
+                    let duration = start.elapsed();
+                    let resp = response.into_inner();
+                    
+                    // Record metrics
+                    counter!("gateway_rpc_calls_total", "method" => "send_input", "success" => "true").increment(1);
+                    histogram!("gateway_rpc_call_duration_seconds", "method" => "send_input").record(duration.as_secs_f64());
+                    
+                    tracing::debug!(
+                        session_id = %session_id,
+                        duration_ms = %duration.as_millis(),
+                        output_count = %resp.output.len(),
+                        "send_input_with_response completed"
+                    );
+                    
+                    Ok(resp)
+                }
+                Err(e) => {
+                    let duration = start.elapsed();
+                    
+                    // Record metrics
+                    counter!("gateway_rpc_calls_total", "method" => "send_input", "success" => "false").increment(1);
+                    counter!("gateway_rpc_errors_total", "method" => "send_input").increment(1);
+                    histogram!("gateway_rpc_call_duration_seconds", "method" => "send_input").record(duration.as_secs_f64());
+                    
+                    tracing::warn!(
+                        session_id = %session_id,
+                        duration_ms = %duration.as_millis(),
+                        error = %e,
+                        "send_input_with_response RPC failed"
+                    );
+                    
+                    Err(format!("RPC error: {}", e))
+                }
+            }
+        } else {
+            Err("Not connected to server".to_string())
+        }
+    }
+
     /// Send input, queuing it if disconnected
     pub async fn send_or_queue_input(
         &self,
@@ -746,21 +845,53 @@ impl RpcClientManager {
 
     /// Check if a username is available
     pub async fn check_username(&self, username: String) -> Result<bool, String> {
-        if let Some(mut client) = self.gateway_client().await {
-            let request = CheckUsernameRequest { username };
+        let start = std::time::Instant::now();
 
+        if let Some(mut client) = self.gateway_client().await {
+            let request = CheckUsernameRequest {
+                username: username.clone(),
+            };
+
+            let rpc_start = std::time::Instant::now();
             match client.check_username(request).await {
                 Ok(response) => {
+                    let rpc_duration = rpc_start.elapsed();
                     let resp = response.into_inner();
-                    if let Some(error) = resp.error {
+                    let result = if let Some(error) = resp.error {
                         Err(error)
                     } else {
                         Ok(resp.available)
-                    }
+                    };
+
+                    tracing::info!(
+                        username = %username,
+                        rpc_duration_ms = %rpc_duration.as_millis(),
+                        total_duration_ms = %start.elapsed().as_millis(),
+                        available = %resp.available,
+                        success = %result.is_ok(),
+                        "check_username RPC completed"
+                    );
+
+                    result
                 }
-                Err(e) => Err(format!("RPC error: {}", e)),
+                Err(e) => {
+                    let duration = start.elapsed();
+                    tracing::warn!(
+                        username = %username,
+                        duration_ms = %duration.as_millis(),
+                        error = %e,
+                        "check_username RPC failed"
+                    );
+                    Err(format!("RPC error: {}", e))
+                }
             }
         } else {
+            let duration = start.elapsed();
+            tracing::warn!(
+                username = %username,
+                duration_ms = %duration.as_millis(),
+                "check_username: not connected"
+            );
             Err(format!(
                 "Unable to connect to server at {}: not connected",
                 self.server_addr
@@ -779,6 +910,8 @@ impl RpcClientManager {
         discord: Option<String>,
         timezone: Option<String>,
     ) -> Result<wyldlands_common::proto::AccountInfo, String> {
+        let start = std::time::Instant::now();
+
         if let Some(mut client) = self.gateway_client().await {
             let properties = HashMap::from([
                 ("email".to_string(), email.unwrap_or_default()),
@@ -787,25 +920,55 @@ impl RpcClientManager {
                 ("timezone".to_string(), timezone.unwrap_or_default()),
             ]);
             let request = CreateAccountRequest {
-                address,
-                username,
+                address: address.clone(),
+                username: username.clone(),
                 password,
                 properties,
             };
 
+            let rpc_start = std::time::Instant::now();
             match client.create_account(request).await {
                 Ok(response) => {
+                    let rpc_duration = rpc_start.elapsed();
                     let resp = response.into_inner();
-                    if resp.success {
+                    let result = if resp.success {
                         resp.account
                             .ok_or_else(|| "No account info returned".to_string())
                     } else {
                         Err(resp.error.unwrap_or_else(|| "Unknown error".to_string()))
-                    }
+                    };
+
+                    tracing::info!(
+                        username = %username,
+                        address = %address,
+                        rpc_duration_ms = %rpc_duration.as_millis(),
+                        total_duration_ms = %start.elapsed().as_millis(),
+                        success = %result.is_ok(),
+                        "create_account RPC completed"
+                    );
+
+                    result
                 }
-                Err(e) => Err(format!("RPC error: {}", e)),
+                Err(e) => {
+                    let duration = start.elapsed();
+                    tracing::warn!(
+                        username = %username,
+                        address = %address,
+                        duration_ms = %duration.as_millis(),
+                        error = %e,
+                        "create_account RPC failed"
+                    );
+                    Err(format!("RPC error: {}", e))
+                }
             }
         } else {
+            let duration = start.elapsed();
+            tracing::warn!(
+                username = %username,
+                address = %address,
+                duration_ms = %duration.as_millis(),
+                "create_account: not connected"
+            );
             Err(format!(
                 "Unable to connect to server at {}: not connected",
                 self.server_addr
@@ -821,29 +984,64 @@ impl RpcClientManager {
         password: String,
         client_addr: String,
     ) -> Result<wyldlands_common::proto::AccountInfo, String> {
+        let start = std::time::Instant::now();
+
         if let Some(mut client) = self.session_client().await {
             let request = AuthenticateSessionRequest {
-                session_id,
-                username,
+                session_id: session_id.clone(),
+                username: username.clone(),
                 password,
-                client_addr,
+                client_addr: client_addr.clone(),
             };
 
+            let rpc_start = std::time::Instant::now();
             match client.authenticate_session(request).await {
                 Ok(response) => {
+                    let rpc_duration = rpc_start.elapsed();
                     let resp = response.into_inner();
-                    if resp.success {
+                    let result = if resp.success {
                         resp.account
                             .ok_or_else(|| "No account info returned".to_string())
                     } else {
                         Err(resp
                             .error
                             .unwrap_or_else(|| "Authentication failed".to_string()))
-                    }
+                    };
+
+                    tracing::info!(
+                        session_id = %session_id,
+                        username = %username,
+                        client_addr = %client_addr,
+                        rpc_duration_ms = %rpc_duration.as_millis(),
+                        total_duration_ms = %start.elapsed().as_millis(),
+                        success = %result.is_ok(),
+                        "authenticate_session RPC completed"
+                    );
+
+                    result
                 }
-                Err(e) => Err(format!("RPC error: {}", e)),
+                Err(e) => {
+                    let duration = start.elapsed();
+                    tracing::warn!(
+                        session_id = %session_id,
+                        username = %username,
+                        client_addr = %client_addr,
+                        duration_ms = %duration.as_millis(),
+                        error = %e,
+                        "authenticate_session RPC failed"
+                    );
+                    Err(format!("RPC error: {}", e))
+                }
             }
         } else {
+            let duration = start.elapsed();
+            tracing::warn!(
+                session_id = %session_id,
+                username = %username,
+                client_addr = %client_addr,
+                duration_ms = %duration.as_millis(),
+                "authenticate_session: not connected"
+            );
             Err(format!(
                 "Unable to connect to server at {}: not connected",
                 self.server_addr
@@ -856,14 +1054,10 @@ impl RpcClientManager {
         &self,
     ) -> Result<wyldlands_common::proto::ServerStatisticsResponse, String> {
         if let Some(mut client) = self.gateway_client().await {
-            let request = ServerStatisticsRequest {
-                statistics: vec![],
-            };
+            let request = ServerStatisticsRequest { statistics: vec![] };
 
             match client.fetch_server_statistics(request).await {
-                Ok(response) => {
-                    Ok(response.into_inner())
-                }
+                Ok(response) => Ok(response.into_inner()),
                 Err(e) => Err(format!("RPC error: {}", e)),
             }
         } else {
@@ -873,7 +1067,6 @@ impl RpcClientManager {
             ))
         }
     }
-
 }
 
 #[cfg(test)]
@@ -973,5 +1166,33 @@ mod tests {
 
         let stats = manager.queue_stats().await;
         assert_eq!(stats.queued_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_clears_old_channel() {
+        let addr = "127.0.0.1:6006";
+        let auth_key = "test-key";
+        let manager = RpcClientManager::new(addr, auth_key, 5, 30);
+
+        // Initial state should be disconnected
+        assert_eq!(manager.state().await, ClientState::Disconnected);
+        assert!(manager.gateway_client().await.is_none());
+        assert!(manager.session_client().await.is_none());
+
+        // Attempt reconnect (will fail since no server is running, but that's expected)
+        let result = manager.reconnect().await;
+        assert!(result.is_err());
+
+        // State should be Failed or Disconnected after failed reconnect
+        let state = manager.state().await;
+        assert!(
+            matches!(state, ClientState::Failed | ClientState::Disconnected),
+            "Expected Failed or Disconnected state, got {:?}",
+            state
+        );
+
+        // Clients should still be None after failed reconnect
+        assert!(manager.gateway_client().await.is_none());
+        assert!(manager.session_client().await.is_none());
     }
 }

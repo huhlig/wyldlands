@@ -10,8 +10,8 @@ async function fetchStats() {
         document.getElementById('uptime').textContent = formatUptime(stats.uptime_seconds);
         document.getElementById('memory-usage').textContent = stats.memory_usage_mb ? `${stats.memory_usage_mb.toFixed(2)} MB` : 'N/A';
         
-        // Update protocol list
-        const protocolList = document.getElementById('protocol-list');
+        // Update sidechannel list
+        const protocolList = document.getElementById('sidechannel-list');
         protocolList.innerHTML = '';
         for (const [protocol, count] of Object.entries(stats.connections_by_protocol)) {
             const li = document.createElement('li');

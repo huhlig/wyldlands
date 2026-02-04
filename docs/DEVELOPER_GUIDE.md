@@ -17,11 +17,12 @@
 7. [Adding New Commands](#adding-new-commands)
 8. [Adding New GOAP Actions](#adding-new-goap-actions)
 9. [Extending the Gateway Protocol](#extending-the-gateway-protocol)
-10. [Database Schema Extensions](#database-schema-extensions)
-11. [Testing Your Extensions](#testing-your-extensions)
-12. [Best Practices](#best-practices)
-13. [Common Patterns](#common-patterns)
-14. [Troubleshooting](#troubleshooting)
+10. [Bidirectional RPC Communication](#bidirectional-rpc-communication)
+11. [Database Schema Extensions](#database-schema-extensions)
+12. [Testing Your Extensions](#testing-your-extensions)
+13. [Best Practices](#best-practices)
+14. [Common Patterns](#common-patterns)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -833,6 +834,270 @@ pub async fn get_player_spells(&self, session_id: &str) -> Result<SpellListRespo
     let client = self.client.lock().await;
     client.get_spell_list(session_id.to_string()).await
         .map_err(|e| format!("RPC error: {}", e))?
+}
+```
+
+---
+
+## Bidirectional RPC Communication
+
+The gateway and server communicate bidirectionally using gRPC. Understanding this architecture is crucial for extending the system.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Gateway                              │
+│                                                              │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ GatewayRpcServer (implements WorldToSession)       │    │
+│  │ - Receives calls FROM server                       │    │
+│  │ - Routes output to connected clients               │    │
+│  └────────────────────────────────────────────────────┘    │
+│                                                              │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ RpcClientManager (contains SessionToWorldClient)   │    │
+│  │ - Sends calls TO server                            │    │
+│  │ - Handles commands from clients                    │    │
+│  └────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+                            ↕ gRPC
+┌─────────────────────────────────────────────────────────────┐
+│                         Server                               │
+│                                                              │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ ServerRpcHandler                                   │    │
+│  │ - Implements SessionToWorld & GatewayManagement    │    │
+│  │ - Receives calls FROM gateway                      │    │
+│  │ - Contains WorldToSessionClient                    │    │
+│  │ - Sends calls TO gateway                           │    │
+│  └────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Communication Flows
+
+#### 1. Gateway → Server (SessionToWorld)
+```rust
+// Gateway sends command to server
+let response = session_client.send_input(SendInputRequest {
+    session_id: session_id.to_string(),
+    command: "look".to_string(),
+}).await?;
+```
+
+#### 2. Server → Gateway (WorldToSession)
+```rust
+// Server sends output to gateway
+let output = vec![GameOutput {
+    output_type: Some(OutputType::Text(TextOutput {
+        content: "You see a room.".to_string()
+    })),
+}];
+self.send_output_to_session(&session_id, output).await?;
+```
+
+### Key Components
+
+#### ServerRpcHandler (server/src/listener.rs)
+
+The `ServerRpcHandler` handles both directions of communication:
+
+```rust
+pub struct ServerRpcHandler {
+    // ... session management fields ...
+    
+    /// Client for sending messages back to gateway
+    gateway_client: Arc<RwLock<Option<WorldToSessionClient>>>,
+    
+    /// Gateway address for connection
+    gateway_addr: String,
+}
+
+impl ServerRpcHandler {
+    /// Connect to the gateway server
+    pub async fn connect_to_gateway(&self) -> Result<(), String> {
+        let channel = Channel::from_shared(format!("http://{}", self.gateway_addr))?
+            .connect()
+            .await?;
+        
+        let client = WorldToSessionClient::new(channel);
+        *self.gateway_client.write().await = Some(client);
+        Ok(())
+    }
+    
+    /// Send output to a session via the gateway
+    async fn send_output_to_session(
+        &self,
+        session_id: &str,
+        output: Vec<GameOutput>,
+    ) -> Result<(), String> {
+        let gateway_client = self.gateway_client.read().await;
+        
+        if let Some(client) = gateway_client.as_ref() {
+            let mut client = client.clone();
+            drop(gateway_client);
+            
+            client.send_output(SendOutputRequest {
+                session_id: session_id.to_string(),
+                output,
+                error: None,
+            }).await?;
+            
+            Ok(())
+        } else {
+            Err("Gateway client not connected".to_string())
+        }
+    }
+}
+```
+
+#### GatewayRpcServer (gateway/src/grpc/server.rs)
+
+The `GatewayRpcServer` receives output from the server and routes it to clients:
+
+```rust
+#[tonic::async_trait]
+impl WorldToSession for GatewayRpcServer {
+    async fn send_output(
+        &self,
+        request: Request<SendOutputRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        let session_id = uuid::Uuid::parse_str(&req.session_id)?;
+        
+        // Route each output message to the client
+        for output in req.output {
+            self.connection_pool.send(session_id, output.into_bytes()).await?;
+        }
+        
+        Ok(Response::new(Empty {}))
+    }
+}
+```
+
+### Best Practices for Bidirectional RPC
+
+#### 1. Always Send Output Directly
+
+**Don't** pack output in RPC responses:
+```rust
+// ❌ Bad - packing output in response
+Ok(Response::new(SendInputResponse {
+    success: true,
+    output: vec![game_output],  // Don't do this
+    error: None,
+}))
+```
+
+**Do** send output via `send_output_to_session`:
+```rust
+// ✅ Good - send output directly
+self.send_output_to_session(&session_id, vec![game_output]).await?;
+
+Ok(Response::new(SendInputResponse {
+    success: true,
+    output: vec![],  // Empty - already sent
+    error: None,
+}))
+```
+
+#### 2. Handle Connection Failures Gracefully
+
+```rust
+// Try to send, but don't fail the command if sending fails
+if let Err(e) = self.send_output_to_session(&session_id, output).await {
+    tracing::warn!("Failed to send output to session {}: {}", session_id, e);
+    // Command still succeeded, just couldn't send output
+}
+```
+
+#### 3. Initialize Connection on Startup
+
+In `server/src/main.rs`:
+```rust
+let handler = ServerRpcHandler::new(
+    config.listener.auth_key.as_str(),
+    world_context,
+    &config.listener.gateway_addr.to_string(),
+);
+
+// Connect to gateway for sending messages back
+if let Err(e) = handler.connect_to_gateway().await {
+    tracing::warn!("Failed to connect to gateway: {}", e);
+}
+```
+
+#### 4. Configure Gateway Address
+
+In `server/config.yaml`:
+```yaml
+listener:
+  addr: ${WYLDLANDS_LISTENER_ADDR:-0.0.0.0:6006}
+  auth_key: ${WYLDLANDS_AUTH_KEY:-secret-key}
+  gateway_addr: ${WYLDLANDS_GATEWAY_ADDR:-localhost:6005}
+```
+
+### Adding New Server→Gateway Messages
+
+To add a new message type that the server sends to the gateway:
+
+1. **Add to proto definition** (`common/proto/gateway.proto`):
+```protobuf
+service WorldToSession {
+  // ... existing methods ...
+  
+  rpc SendNotification(NotificationRequest) returns (Empty);
+}
+
+message NotificationRequest {
+  string session_id = 1;
+  string notification_type = 2;
+  string message = 3;
+}
+```
+
+2. **Implement in GatewayRpcServer** (`gateway/src/grpc/server.rs`):
+```rust
+async fn send_notification(
+    &self,
+    request: Request<NotificationRequest>,
+) -> Result<Response<Empty>, Status> {
+    let req = request.into_inner();
+    let session_id = uuid::Uuid::parse_str(&req.session_id)?;
+    
+    // Format and send notification
+    let notification = format!("[{}] {}\r\n", req.notification_type, req.message);
+    self.connection_pool.send(session_id, notification.into_bytes()).await?;
+    
+    Ok(Response::new(Empty {}))
+}
+```
+
+3. **Use from ServerRpcHandler** (`server/src/listener.rs`):
+```rust
+async fn send_notification(
+    &self,
+    session_id: &str,
+    notification_type: &str,
+    message: &str,
+) -> Result<(), String> {
+    let gateway_client = self.gateway_client.read().await;
+    
+    if let Some(client) = gateway_client.as_ref() {
+        let mut client = client.clone();
+        drop(gateway_client);
+        
+        client.send_notification(NotificationRequest {
+            session_id: session_id.to_string(),
+            notification_type: notification_type.to_string(),
+            message: message.to_string(),
+        }).await?;
+        
+        Ok(())
+    } else {
+        Err("Gateway client not connected".to_string())
+    }
 }
 ```
 

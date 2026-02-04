@@ -16,8 +16,8 @@
 
 //! WebSocket server adapter implementation
 
-use crate::protocol::json::{self, WebSocketMessage};
-use crate::server::{ClientCapabilities, ProtocolAdapter, ProtocolError, ProtocolMessage};
+use crate::sidechannel::json::{self, WebSocketMessage};
+use crate::server::{self, ClientCapabilities, ProtocolAdapter, ProtocolError, ProtocolMessage};
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket};
 use futures::stream::StreamExt;
@@ -296,6 +296,10 @@ impl ProtocolAdapter for WebSocketAdapter {
                 Ok(Some(ProtocolMessage::Disconnected))
             }
         }
+    }
+
+    fn set_input_mode(&mut self, _mode: server::InputMode) {
+        // WebSocket input mode is currently handled internally by process_input
     }
 
     async fn close(&mut self) -> Result<(), ProtocolError> {

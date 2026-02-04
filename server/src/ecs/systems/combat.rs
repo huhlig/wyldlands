@@ -23,6 +23,7 @@ use crate::ecs::components::{
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::registry::EntityRegistry;
 use crate::ecs::{EcsEntity, GameWorld};
+use tracing::instrument;
 use hecs::Entity;
 use std::collections::HashMap;
 
@@ -126,6 +127,7 @@ impl CombatSystem {
     }
 
     /// Perform an attack
+    #[instrument(skip(self, world))]
     pub fn attack(
         &mut self,
         world: &mut GameWorld,
@@ -193,6 +195,7 @@ impl CombatSystem {
     }
 
     /// Update the combat system
+    #[instrument(skip(self, world))]
     pub fn update(&mut self, world: &mut GameWorld, delta_time: f32) {
         let mut attacks = Vec::new();
         let mut _dead_targets: Vec<hecs::Entity> = Vec::new();

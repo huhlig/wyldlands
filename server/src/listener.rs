@@ -23,6 +23,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
+use tonic::transport::Channel;
+use tracing::info;
 use wyldlands_common::gateway::{PersistentEntityId, SessionId};
 use wyldlands_common::proto::game_output::OutputType;
 use wyldlands_common::proto::{
@@ -30,10 +32,11 @@ use wyldlands_common::proto::{
     AuthenticateSessionResponse, CheckUsernameRequest, CheckUsernameResponse, CreateAccountRequest,
     CreateAccountResponse, DataValue, EditResponse, Empty, GameOutput, GatewayHeartbeatRequest,
     GatewayHeartbeatResponse, GatewayManagement, GatewayPropertiesRequest,
-    GatewayPropertiesResponse, SendInputRequest, SendInputResponse, ServerStatisticsRequest,
-    ServerStatisticsResponse, SessionDisconnectedRequest, SessionHeartbeatRequest,
-    SessionHeartbeatResponse, SessionReconnectedRequest, SessionReconnectedResponse,
-    SessionToWorld, StructuredOutput, TextOutput, game_output,
+    GatewayPropertiesResponse, SendInputRequest, SendInputResponse, SendOutputRequest,
+    ServerStatisticsRequest, ServerStatisticsResponse, SessionDisconnectedRequest,
+    SessionHeartbeatRequest, SessionHeartbeatResponse, SessionReconnectedRequest,
+    SessionReconnectedResponse, SessionToWorld, StructuredOutput, TextOutput, WorldToSessionClient,
+    game_output,
 };
 
 /// Server RPC handler
@@ -61,6 +64,12 @@ pub struct ServerRpcHandler {
 
     /// Start time of the server handler
     start_time: std::time::Instant,
+
+    /// Client for sending messages back to gateway
+    gateway_client: Arc<RwLock<Option<WorldToSessionClient>>>,
+
+    /// Gateway address for connection
+    gateway_addr: String,
 }
 
 /// Session state type for routing commands
@@ -90,14 +99,11 @@ struct SessionState {
 
     /// Client IP address from gateway
     client_addr: Option<String>,
-
-    /// Queued events during disconnection
-    queued_events: Vec<GameOutput>,
 }
 
 impl ServerRpcHandler {
     /// Create a new server RPC handler
-    pub fn new(auth_key: &str, world_context: Arc<WorldContext>) -> Self {
+    pub fn new(auth_key: &str, world_context: Arc<WorldContext>, gateway_addr: &str) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             active_entities: Arc::new(RwLock::new(HashMap::new())),
@@ -106,12 +112,61 @@ impl ServerRpcHandler {
             auth_key: auth_key.to_string(),
             authenticated: Arc::new(RwLock::new(false)),
             start_time: std::time::Instant::now(),
+            gateway_client: Arc::new(RwLock::new(None)),
+            gateway_addr: gateway_addr.to_string(),
         }
     }
 
     /// Check if the connection is authenticated
     async fn is_authenticated(&self) -> bool {
         *self.authenticated.read().await
+    }
+
+    /// Connect to the gateway server
+    pub async fn connect_to_gateway(&self) -> Result<(), String> {
+        tracing::info!("Connecting to gateway at {}", self.gateway_addr);
+        
+        let channel = Channel::from_shared(format!("http://{}", self.gateway_addr))
+            .map_err(|e| format!("Invalid gateway address: {}", e))?
+            .connect()
+            .await
+            .map_err(|e| format!("Failed to connect to gateway: {}", e))?;
+
+        let client = WorldToSessionClient::new(channel);
+        let mut gateway_client = self.gateway_client.write().await;
+        *gateway_client = Some(client);
+
+        tracing::info!("Successfully connected to gateway");
+        Ok(())
+    }
+
+    /// Send output to a session via the gateway
+    pub async fn send_output_to_session(
+        &self,
+        session_id: &str,
+        output: Vec<GameOutput>,
+    ) -> Result<(), String> {
+        let gateway_client = self.gateway_client.read().await;
+        
+        if let Some(client) = gateway_client.as_ref() {
+            let mut client = client.clone();
+            drop(gateway_client); // Release the lock before making the RPC call
+
+            let request = SendOutputRequest {
+                session_id: session_id.to_string(),
+                output,
+                error: None,
+            };
+
+            client
+                .send_output(request)
+                .await
+                .map_err(|e| format!("Failed to send output to gateway: {}", e))?;
+
+            Ok(())
+        } else {
+            Err("Gateway client not connected".to_string())
+        }
     }
 }
 
@@ -160,7 +215,7 @@ impl GatewayManagement for ServerRpcHandler {
         let keys = request.into_inner().properties;
         let mut properties = HashMap::new();
         // Load requested properties from database settings table in one go
-        match sqlx::query_scalar::<_, (String, String)>(
+        match sqlx::query_as::<_, (String, String)>(
             "SELECT key, value FROM wyldlands.settings WHERE key = ANY($1)",
         )
         .bind(&keys)
@@ -223,7 +278,10 @@ impl GatewayManagement for ServerRpcHandler {
 
         // Entity Statistics
         let active_entities = self.active_entities.read().await;
-        statistics.insert("active_entities".to_string(), active_entities.len().to_string());
+        statistics.insert(
+            "active_entities".to_string(),
+            active_entities.len().to_string(),
+        );
 
         statistics.insert(
             "world_entities".to_string(),
@@ -440,6 +498,11 @@ impl SessionToWorld for ServerRpcHandler {
             }));
         }
 
+        tracing::warn!(
+            "Authentication attempt for account {} with password {}",
+            req.username,
+            req.password
+        );
         let account = match self
             .world_context
             .persistence()
@@ -507,9 +570,56 @@ impl SessionToWorld for ServerRpcHandler {
                 } else {
                     Some(req.client_addr.clone())
                 },
-                queued_events: Vec::new(),
             },
         );
+        drop(sessions);
+
+        // Load and send character list automatically after authentication
+        match self
+            .world_context
+            .persistence()
+            .list_characters_for_account(account.id)
+            .await
+        {
+            Ok(avatars) => {
+                let mut content = String::from("\r\n=== Your Characters ===\r\n\r\n");
+
+                if avatars.is_empty() {
+                    content.push_str("You have no characters yet.\r\n");
+                } else {
+                    for avatar in avatars {
+                        content.push_str(&format!("  {}\r\n", avatar.display));
+                    }
+                }
+
+                content.push_str("\r\nCommands:\r\n");
+                content.push_str("  create - Create a new character\r\n");
+                content.push_str("  select <name> - Select a character to play\r\n");
+                content.push_str("  list - Show this list again\r\n");
+
+                // Send the character list directly to the session
+                let output = vec![GameOutput {
+                    output_type: Some(OutputType::Text(TextOutput { content })),
+                }];
+                
+                if let Err(e) = self.send_output_to_session(&req.session_id, output).await {
+                    tracing::warn!("Failed to send character list to session {}: {}", req.session_id, e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load character list for account {}: {}", account.id, e);
+                // Send error message directly
+                let output = vec![GameOutput {
+                    output_type: Some(game_output::OutputType::Text(TextOutput {
+                        content: format!("Error loading character list: {}\r\n", e),
+                    })),
+                }];
+                
+                if let Err(e) = self.send_output_to_session(&req.session_id, output).await {
+                    tracing::warn!("Failed to send error message to session {}: {}", req.session_id, e);
+                }
+            }
+        }
 
         // Convert account to protobuf AccountInfo
         let account_info = wyldlands_common::proto::AccountInfo {
@@ -544,7 +654,7 @@ impl SessionToWorld for ServerRpcHandler {
         }
 
         let req = request.into_inner();
-        tracing::debug!(
+        tracing::info!(
             "gRPC command from session {}: {}",
             req.session_id,
             req.command
@@ -559,44 +669,54 @@ impl SessionToWorld for ServerRpcHandler {
         let current_state = session.state.clone();
         drop(sessions);
 
-        // Convert SessionStateType to protobuf SessionState enum
-        let proto_state = match current_state {
-            SessionStateType::Unauthenticated => 1,   // UNAUTHENTICATED
-            SessionStateType::Authenticated => 2,     // AUTHENTICATED
-            SessionStateType::CharacterCreation => 3, // CHARACTER_CREATION
-            SessionStateType::Playing => 4,           // PLAYING
-            SessionStateType::Editing => 5,           // EDITING
-        };
-
-        // Route based on state
-        match current_state {
+        // Route based on state and get command response
+        let response = match current_state {
             SessionStateType::Authenticated => {
                 // Handle authenticated state commands (character selection, creation initiation)
-                self.handle_authenticated_command(req.session_id, req.command)
+                self.handle_authenticated_command(req.session_id.clone(), req.command)
                     .await
             }
             SessionStateType::CharacterCreation => {
                 // Handle character creation commands
-                self.handle_character_creation_command(req.session_id, req.command)
+                self.handle_character_creation_command(req.session_id.clone(), req.command)
                     .await
             }
             SessionStateType::Playing => {
                 // Handle gameplay commands
-                self.handle_playing_command(req.session_id, req.command)
+                self.handle_playing_command(req.session_id.clone(), req.command)
                     .await
             }
             _ => {
                 // Other states not yet implemented
-                Ok(Response::new(SendInputResponse {
+                let error_msg = format!("Commands not implemented for state: {:?}", current_state);
+                tracing::warn!("{}", error_msg);
+                return Ok(Response::new(SendInputResponse {
                     success: false,
                     output: vec![],
-                    error: Some(format!(
-                        "Commands not implemented for state: {:?}",
-                        current_state
-                    )),
-                }))
+                    error: Some(error_msg),
+                }));
+            }
+        }?;
+
+        // Extract output from response and send it directly to the session
+        let output = response.into_inner().output;
+        if !output.is_empty() {
+            if let Err(e) = self.send_output_to_session(&req.session_id, output).await {
+                tracing::warn!("Failed to send command output to session {}: {}", req.session_id, e);
+                return Ok(Response::new(SendInputResponse {
+                    success: false,
+                    output: vec![],
+                    error: Some(format!("Failed to send output: {}", e)),
+                }));
             }
         }
+
+        // Return simple success response (output already sent via send_output)
+        Ok(Response::new(SendInputResponse {
+            success: true,
+            output: vec![],
+            error: None,
+        }))
     }
 
     async fn finish_editing(
@@ -732,6 +852,7 @@ impl ServerRpcHandler {
         session_id: String,
         command: String,
     ) -> Result<Response<SendInputResponse>, Status> {
+        info!("Received authenticated command from session {session_id}: {command}");
         let command = command.trim().to_lowercase();
         let mut output = Vec::new();
 
@@ -1368,6 +1489,7 @@ impl ServerRpcHandler {
         session_id: String,
         command: String,
     ) -> Result<Response<SendInputResponse>, Status> {
+        info!("Handling playing command '{command}' for session {session_id}");
         // Get the active entity for this session
         let active_entities = self.active_entities.read().await;
         let entity_id = active_entities
@@ -1449,13 +1571,13 @@ mod tests {
     use crate::persistence::PersistenceManager;
     use std::sync::Arc;
     use tonic::Request;
-    use wyldlands_common::proto::{ServerStatisticsRequest, GatewayManagement};
+    use wyldlands_common::proto::{GatewayManagement, ServerStatisticsRequest};
 
     #[tokio::test]
     async fn test_fetch_server_statistics() {
         let persistence = Arc::new(PersistenceManager::new_mock());
         let world_context = Arc::new(WorldContext::new(persistence));
-        let handler = ServerRpcHandler::new("test_key", world_context);
+        let handler = ServerRpcHandler::new("test_key", world_context, "localhost:6005");
 
         // Authenticate first
         let auth_request = Request::new(AuthenticateGatewayRequest {
@@ -1463,9 +1585,7 @@ mod tests {
         });
         handler.authenticate_gateway(auth_request).await.unwrap();
 
-        let request = Request::new(ServerStatisticsRequest {
-            statistics: vec![],
-        });
+        let request = Request::new(ServerStatisticsRequest { statistics: vec![] });
 
         let response = handler.fetch_server_statistics(request).await.unwrap();
         let stats = response.into_inner().statistics;
@@ -1476,7 +1596,7 @@ mod tests {
         assert!(stats.contains_key("world_entities"));
         assert!(stats.contains_key("dirty_entities"));
         assert!(stats.contains_key("characters_in_creation"));
-        
+
         assert_eq!(stats.get("active_sessions").unwrap(), "0");
         assert_eq!(stats.get("world_entities").unwrap(), "0");
     }

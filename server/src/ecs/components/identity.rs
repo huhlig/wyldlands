@@ -17,6 +17,7 @@
 //! Identity components for entity identification and description
 
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 
 /// Combined entity identifier containing both ECS runtime handle and persistent UUID
 ///
@@ -26,7 +27,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Note: Only the UUID is serialized since the ECS entity handle is transient.
 /// The entity handle must be restored from the EntityRegistry after deserialization.
-#[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct EntityId {
     /// Runtime ECS entity handle (transient, changes on restart)
     #[serde(skip)]
@@ -114,6 +115,12 @@ impl Ord for EntityId {
 }
 
 impl Eq for EntityId {}
+
+impl Hash for EntityId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.uuid.hash(state);
+    }
+}
 
 /// Unique identifier for entities that need persistence
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

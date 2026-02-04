@@ -23,6 +23,7 @@ use crate::models::ModelManager;
 use crate::persistence::PersistenceManager;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::instrument;
 use uuid::Uuid;
 
 /// World context that provides safe access to ECS world, registry, and persistence
@@ -174,14 +175,15 @@ impl WorldContext {
 
     /// Spawn a new entity with the given components
     ///
-    /// This is a safe wrapper that handles locking internally.
     /// Returns the spawned entity handle.
+    #[instrument(skip(self, bundle))]
     pub async fn spawn(&self, bundle: impl hecs::DynamicBundle) -> EcsEntity {
         let mut world = self.entities.write().await;
         world.spawn(bundle)
     }
 
     /// Spawn a new entity with the given components (blocking version)
+    #[instrument(skip(self, bundle))]
     pub fn spawn_blocking(&self, bundle: impl hecs::DynamicBundle) -> EcsEntity {
         let mut world = self.entities.blocking_write();
         world.spawn(bundle)
@@ -190,12 +192,14 @@ impl WorldContext {
     /// Despawn an entity, removing it and all its components
     ///
     /// Returns Ok(()) if the entity was despawned, or Err if it didn't exist.
+    #[instrument(skip(self))]
     pub async fn despawn(&self, entity: EcsEntity) -> Result<(), hecs::NoSuchEntity> {
         let mut world = self.entities.write().await;
         world.despawn(entity)
     }
 
     /// Check if an entity exists in the world
+    #[instrument(skip(self))]
     pub async fn contains(&self, entity: EcsEntity) -> bool {
         let world = self.entities.read().await;
         world.contains(entity)
@@ -349,12 +353,14 @@ impl WorldContext {
     }
 
     /// Save all dirty entities to the database
+    #[instrument(skip(self))]
     pub async fn save(&self) -> Result<usize, String> {
         let world = self.entities.read().await;
         self.persistence_manager.auto_save(&world).await
     }
 
     /// Load all persistent entities from the database into the world
+    #[instrument(skip(self))]
     pub async fn load(&self) -> Result<usize, String> {
         let mut world = self.entities.write().await;
         let mut registry = self.registry.write().await;

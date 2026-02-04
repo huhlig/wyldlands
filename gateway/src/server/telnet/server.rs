@@ -21,14 +21,16 @@ use crate::context::ServerContext;
 use crate::reconnection::ReconnectionManager;
 use crate::server::telnet::adapter::TermionixAdapter;
 use crate::server::telnet::handler::StateHandler;
+use crate::server::{InputMode, ProtocolAdapter};
 use crate::session::ProtocolType;
 use std::collections::HashMap;
 use std::sync::Arc;
-use termionix_service::{
+use termionix_server::{
     ConnectionId, ServerConfig, ServerHandler, TelnetConnection, TelnetError, TelnetServer,
+    TerminalEvent,
 };
-use termionix_terminal::TerminalEvent;
 use tokio::sync::{RwLock, mpsc};
+use tracing::{Instrument, info_span};
 use uuid::Uuid;
 use wyldlands_common::gateway::GatewayProperty;
 
@@ -84,180 +86,120 @@ impl ServerHandler for WyldlandsHandler {
                             .await
                             .insert(id, (session_id, event_tx));
 
-                        // Create an adapter and state handler
-                        let mut adapter = TermionixAdapter::new(conn.clone(), id, event_rx);
-                        let state_handler =
-                            StateHandler::new(session_id, self.context.clone(), addr);
+                        // Spawn a task to handle this connection's events
+                        let context = self.context.clone();
+                        let conn_clone = conn.clone();
+                        let addr_clone = addr.clone();
 
-                        // Send the initial prompt in a separate task
-                        tokio::spawn(async move {
-                            if let Err(e) = state_handler.send_prompt(&mut adapter).await {
-                                tracing::error!("Failed to send initial prompt: {}", e);
+                        tokio::spawn(
+                            async move {
+                                let mut adapter =
+                                    TermionixAdapter::new(conn_clone.clone(), event_rx);
+                                let mut state_handler =
+                                    StateHandler::new(session_id, context.clone(), addr_clone);
+
+                                // Update input mode immediately before sending prompt
+                                if state_handler.is_editing() {
+                                    adapter.set_input_mode(InputMode::Character);
+                                } else {
+                                    adapter.set_input_mode(InputMode::Line);
+                                }
+
+                                // Send initial prompt (adapter now flushes automatically)
+                                if let Err(e) = state_handler.send_prompt(&mut adapter).await {
+                                    tracing::error!("Failed to send initial prompt: {}", e);
+                                }
+
+                                // Event loop - optimized for hot path
+                                use crate::server::ProtocolMessage;
+                                while let Ok(msg_opt) = adapter.receive().await {
+                                    if let Some(msg) = msg_opt {
+                                        match msg {
+                                            ProtocolMessage::Text(input) => {
+                                                // Process input
+                                                match state_handler
+                                                    .process_input(&mut adapter, input)
+                                                    .await
+                                                {
+                                                    Ok(()) => {
+                                                        // Send next prompt
+                                                        if let Err(e) = state_handler
+                                                            .send_prompt(&mut adapter)
+                                                            .await
+                                                        {
+                                                            tracing::error!(
+                                                                "Failed to send prompt: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "Error processing input: {}",
+                                                            e
+                                                        );
+                                                        let _ = conn_clone
+                                                            .send(
+                                                                &format!("Error: {}\r\n", e),
+                                                                true,
+                                                            )
+                                                            .await;
+
+                                                        // Send prompt again
+                                                        if let Err(e) = state_handler
+                                                            .send_prompt(&mut adapter)
+                                                            .await
+                                                        {
+                                                            tracing::error!(
+                                                                "Failed to send prompt: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            ProtocolMessage::Disconnected => {
+                                                tracing::info!(
+                                                    "Adapter received disconnect for session {}",
+                                                    session_id
+                                                );
+                                                break;
+                                            }
+                                            _ => {
+                                                // Handle other sidechannel messages if needed
+                                            }
+                                        }
+                                    }
+                                }
+                                tracing::info!(
+                                    "Connection task for session {} finished",
+                                    session_id
+                                );
                             }
-                        });
+                            .instrument(info_span!("telnet_connection", session_id = %session_id)),
+                        );
                     }
                     Err(e) => {
                         tracing::error!("Failed to register connection: {}", e);
-                        let _ = conn.send("Failed to register connection\r\n").await;
+                        let _ = conn.send("Failed to register connection\r\n", true).await;
                     }
                 }
             }
             Err(e) => {
                 tracing::error!("Failed to create session: {}", e);
-                let _ = conn.send("Failed to create session\r\n").await;
+                let _ = conn.send("Failed to create session\r\n", true).await;
             }
         }
     }
 
-    async fn on_event(&self, id: ConnectionId, conn: &TelnetConnection, event: TerminalEvent) {
-        // Get session ID and event sender for this connection
+    async fn on_event(&self, id: ConnectionId, _conn: &TelnetConnection, event: TerminalEvent) {
+        // Get event sender for this connection
         let connection_info = self.connections.read().await.get(&id).cloned();
 
-        if let Some((session_id, event_tx)) = connection_info {
+        if let Some((_session_id, event_tx)) = connection_info {
             // Forward event to the adapter's event channel
             if event_tx.send(event.clone()).is_err() {
                 tracing::warn!("Failed to forward event for connection {}", id);
-                return;
-            }
-
-            // Check session state to determine input mode
-            let session = self.context.session_manager().get_session(session_id).await;
-            let is_editing = session
-                .as_ref()
-                .map(|s| s.state.is_editing())
-                .unwrap_or(false);
-
-            // Extract input based on event type and session state
-            let input_opt = match &event {
-                // In editing mode, process character-by-character
-                TerminalEvent::CharacterData { character, .. } if is_editing => {
-                    Some(character.to_string())
-                }
-                // In playing mode, process complete lines
-                TerminalEvent::LineCompleted { line, .. } if !is_editing => Some(line.to_string()),
-                // Don't process other combinations
-                _ => None,
-            };
-
-            if let Some(input) = input_opt {
-                tracing::debug!(
-                    "Received input from connection {} (editing={}): '{}'",
-                    id,
-                    is_editing,
-                    input
-                );
-
-                // Create adapter for this event
-                let (_event_tx2, event_rx) = mpsc::unbounded_channel();
-                let mut adapter = TermionixAdapter::new(conn.clone(), id, event_rx);
-                let mut state_handler = StateHandler::new(
-                    session_id,
-                    self.context.clone(),
-                    conn.peer_addr().to_string(),
-                );
-
-                // Process input
-                match state_handler.process_input(&mut adapter, input).await {
-                    Ok(()) => {
-                        // Check if we've transitioned to authenticated state
-                        if let Some(session) =
-                            self.context.session_manager().get_session(session_id).await
-                        {
-                            if session.state.is_authenticated() {
-                                // Send start command to server
-                                tracing::info!(
-                                    "Session {} authenticated, starting game",
-                                    session_id
-                                );
-
-                                let rpc_client = self.context.rpc_client();
-                                use wyldlands_common::proto::SessionToWorldClient;
-                                if let Some(client) = rpc_client.session_client().await {
-                                    let mut client: SessionToWorldClient = client;
-                                    let request = wyldlands_common::proto::SendInputRequest {
-                                        session_id: session_id.to_string(),
-                                        command: "start".to_string(),
-                                    };
-
-                                    match client.send_input(request).await {
-                                        Ok(response) => {
-                                            let resp = response.into_inner();
-                                            if resp.success {
-                                                tracing::info!(
-                                                    "Game started for session {}",
-                                                    session_id
-                                                );
-                                            } else {
-                                                let error_msg = resp
-                                                    .error
-                                                    .unwrap_or_else(|| "Unknown error".to_string());
-                                                tracing::error!(
-                                                    "Failed to start game: {}",
-                                                    error_msg
-                                                );
-                                                let _ = conn
-                                                    .send(&format!(
-                                                        "Failed to start: {}\r\n",
-                                                        error_msg
-                                                    ))
-                                                    .await;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("RPC error starting game: {}", e);
-                                            let _ =
-                                                conn.send("Server communication error.\r\n").await;
-                                        }
-                                    }
-                                }
-
-                                // Generate reconnection token
-                                match self.reconnection_manager.generate_token(session_id).await {
-                                    Ok(token) => match token.encode() {
-                                        Ok(encoded) => {
-                                            let _ = conn
-                                                .send(&format!(
-                                                    "Your reconnection token: {}\r\n",
-                                                    encoded
-                                                ))
-                                                .await;
-                                            tracing::info!(
-                                                "Generated reconnection token for session {}",
-                                                session_id
-                                            );
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to encode reconnection token: {}",
-                                                e
-                                            );
-                                        }
-                                    },
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Failed to generate reconnection token: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Send next prompt
-                        if let Err(e) = state_handler.send_prompt(&mut adapter).await {
-                            tracing::error!("Failed to send prompt: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Error processing input: {}", e);
-                        let _ = conn.send(&format!("Error: {}\r\n", e)).await;
-
-                        // Send prompt again
-                        if let Err(e) = state_handler.send_prompt(&mut adapter).await {
-                            tracing::error!("Failed to send prompt: {}", e);
-                        }
-                    }
-                }
             }
         }
     }
@@ -278,7 +220,10 @@ impl ServerHandler for WyldlandsHandler {
         tracing::info!("Connection {} disconnected", id);
 
         // Get session ID for this connection
-        let connection_info = self.connections.write().await.remove(&id);
+        let connection_info = {
+            let mut connections = self.connections.write().await;
+            connections.remove(&id)
+        };
 
         if let Some((session_id, _)) = connection_info {
             // Display logout message
@@ -288,7 +233,7 @@ impl ServerHandler for WyldlandsHandler {
                 .get_property(GatewayProperty::BannerLogout)
                 .await
             {
-                let _ = conn.send(&disconnect_msg).await;
+                let _ = conn.send(&disconnect_msg, true).await;
             }
 
             // Generate reconnection token
@@ -353,8 +298,11 @@ impl TermionixTelnetServer {
         tracing::info!("Starting Termionix telnet server on {}", bind_addr);
 
         // Create Termionix server config
+        // Set read_timeout to 5 minutes to allow time for banner fetching and user input
+        // The banners can take 20-30 seconds to fetch via RPC, so we need a longer timeout
         let server_config = ServerConfig::new(bind_addr)
             .with_max_connections(1000)
+            .with_read_timeout(std::time::Duration::from_secs(300))
             .with_idle_timeout(std::time::Duration::from_secs(3600));
 
         // Create Termionix server
@@ -380,5 +328,3 @@ impl TermionixTelnetServer {
         Ok(())
     }
 }
-
-

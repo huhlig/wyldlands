@@ -20,9 +20,11 @@
 //! providing a clean separation between connection handling and state logic.
 
 use crate::context::ServerContext;
-use crate::server::ProtocolAdapter;
+use crate::properties::{BANNER_LOGIN_DEFAULT, BANNER_WELCOME_DEFAULT};
+use crate::server::{InputMode, ProtocolAdapter};
 use crate::session::{AuthenticatedState, NewAccountState, SessionState, UnauthenticatedState};
-use termionix_terminal::{terminal_word_unwrap, terminal_word_wrap};
+use termionix_server::{terminal_word_unwrap, terminal_word_wrap};
+use tracing::instrument;
 use uuid::Uuid;
 use wyldlands_common::gateway::GatewayProperty;
 
@@ -40,6 +42,9 @@ pub struct StateHandler {
     session_id: Uuid,
     context: ServerContext,
     address: String,
+
+    // Cached session state to avoid repeated lookups
+    cached_state: SessionState,
 
     // Temporary storage for multi-step flows
     temp_username: Option<String>,
@@ -62,6 +67,7 @@ impl StateHandler {
             session_id,
             context,
             address,
+            cached_state: SessionState::Unauthenticated(UnauthenticatedState::Welcome),
             temp_username: None,
             temp_password: None,
             temp_display_name: None,
@@ -74,48 +80,99 @@ impl StateHandler {
         }
     }
 
+    /// Check if the current state is an editing state
+    pub fn is_editing(&self) -> bool {
+        self.cached_state.is_editing()
+    }
+
     /// Process input based on current session state
+    #[instrument(skip(self, adapter))]
     pub async fn process_input(
         &mut self,
         adapter: &mut dyn ProtocolAdapter,
         input: String,
     ) -> Result<(), String> {
-        // Get current session state
-        let session = self
-            .context
-            .session_manager()
-            .get_session(self.session_id)
-            .await
-            .ok_or_else(|| "Session not found".to_string())?;
+        let start = std::time::Instant::now();
+        
+        // Fast path for the most common case: authenticated playing state
+        // This avoids match overhead and function call for the hot path
+        if matches!(self.cached_state, SessionState::Authenticated(AuthenticatedState::Playing)) {
+            let result = self.send_command_to_server(input).await;
+            let duration = start.elapsed();
+            tracing::debug!(
+                session_id = %self.session_id,
+                state = "playing",
+                duration_ms = %duration.as_millis(),
+                "process_input completed (fast path)"
+            );
+            return result;
+        }
 
-        match session.state {
+        // Use cached state instead of looking up session every time
+        let result = match &self.cached_state {
             SessionState::Unauthenticated(substate) => {
-                self.handle_unauthenticated(adapter, substate, input).await
+                self.handle_unauthenticated(adapter, *substate, input).await
             }
             SessionState::Authenticated(substate) => {
-                self.handle_authenticated(adapter, substate, input).await
+                self.handle_authenticated(adapter, substate.clone(), input).await
             }
             SessionState::Disconnected => Err("Session is disconnected".to_string()),
+        };
+        
+        let duration = start.elapsed();
+        tracing::debug!(
+            session_id = %self.session_id,
+            state = %self.cached_state.to_metric_str(),
+            duration_ms = %duration.as_millis(),
+            success = %result.is_ok(),
+            "process_input completed"
+        );
+        
+        result
+    }
+
+    /// Fast path: Send command directly to server (hot path optimization)
+    #[inline]
+    async fn send_command_to_server(&self, input: String) -> Result<(), String> {
+        // Skip blank inputs - server sends output directly to client now
+        if input.trim().is_empty() {
+            return Ok(());
+        }
+
+        let rpc_client = self.context.rpc_client();
+        if let Some(mut client) = rpc_client.session_client().await {
+            let request = wyldlands_common::proto::SendInputRequest {
+                session_id: self.session_id.to_string(),
+                command: input,
+            };
+
+            client.send_input(request).await
+                .map(|_| ())
+                .map_err(|e| format!("Failed to send command: {}", e))
+        } else {
+            Err("Server not connected".to_string())
         }
     }
 
     /// Send the appropriate prompt based on current state
-    pub async fn send_prompt(&self, adapter: &mut dyn ProtocolAdapter) -> Result<(), String> {
-        let session = self
-            .context
-            .session_manager()
-            .get_session(self.session_id)
-            .await
-            .ok_or_else(|| "Session not found".to_string())?;
+    pub async fn send_prompt(&mut self, adapter: &mut dyn ProtocolAdapter) -> Result<(), String> {
+        // Use cached state instead of looking up session
+        // Update input mode based on session state
+        if self.cached_state.is_editing() {
+            adapter.set_input_mode(InputMode::Character);
+        } else {
+            adapter.set_input_mode(InputMode::Line);
+        }
 
-        match session.state {
+        match &self.cached_state {
             SessionState::Unauthenticated(substate) => {
-                self.send_unauthenticated_prompt(adapter, substate).await
+                self.send_unauthenticated_prompt(adapter, *substate).await
             }
             SessionState::Authenticated(AuthenticatedState::Playing) => {
-                adapter.send_text("> ").await.map_err(|e| e.to_string())
+                adapter.send_text("> ").await.map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
             }
-            SessionState::Authenticated(AuthenticatedState::Editing { ref title, .. }) => {
+            SessionState::Authenticated(AuthenticatedState::Editing { title, .. }) => {
                 let mode_indicator = match self.editor_mode {
                     EditorMode::Insert => "INS",
                     EditorMode::Overwrite => "OVR",
@@ -123,7 +180,8 @@ impl StateHandler {
                 adapter
                     .send_text(&format!("[Editing: {} - {}] ", title, mode_indicator))
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
             }
             SessionState::Disconnected => {
                 Ok(()) // No prompt for disconnected state
@@ -132,13 +190,16 @@ impl StateHandler {
     }
 
     /// Handle input in unauthenticated state
+    #[instrument(skip(self, adapter))]
     async fn handle_unauthenticated(
         &mut self,
         adapter: &mut dyn ProtocolAdapter,
         substate: UnauthenticatedState,
         input: String,
     ) -> Result<(), String> {
-        match substate {
+        let start = std::time::Instant::now();
+        
+        let result = match substate {
             UnauthenticatedState::Welcome => {
                 // Welcome state auto-advances, shouldn't receive input
                 self.transition_to(SessionState::Unauthenticated(
@@ -154,15 +215,28 @@ impl StateHandler {
             UnauthenticatedState::NewAccount(new_state) => {
                 self.handle_new_account(adapter, new_state, input).await
             }
-        }
+        };
+        
+        let duration = start.elapsed();
+        tracing::info!(
+            session_id = %self.session_id,
+            substate = ?substate,
+            duration_ms = %duration.as_millis(),
+            success = %result.is_ok(),
+            "handle_unauthenticated completed"
+        );
+        
+        result
     }
 
     /// Handle username input
+    #[instrument(skip(self, adapter))]
     async fn handle_username_input(
         &mut self,
         adapter: &mut dyn ProtocolAdapter,
         input: String,
     ) -> Result<(), String> {
+        let start = std::time::Instant::now();
         let username = input.trim();
 
         if username.is_empty() {
@@ -170,33 +244,56 @@ impl StateHandler {
                 .send_line("Username cannot be empty.\r\n")
                 .await
                 .map_err(|e| e.to_string())?;
+            tracing::debug!(
+                session_id = %self.session_id,
+                duration_ms = %start.elapsed().as_millis(),
+                "handle_username_input: empty username rejected"
+            );
             return Ok(());
         }
 
         // Check if user wants to create new account
         if username.eq_ignore_ascii_case("n") || username.eq_ignore_ascii_case("new") {
             adapter.send_line("\r\n").await.map_err(|e| e.to_string())?;
-            return self
+            let result = self
                 .transition_to(SessionState::Unauthenticated(
                     UnauthenticatedState::NewAccount(NewAccountState::Banner),
                 ))
                 .await;
+            
+            tracing::info!(
+                session_id = %self.session_id,
+                duration_ms = %start.elapsed().as_millis(),
+                "handle_username_input: new account flow initiated"
+            );
+            return result;
         }
 
         // Store username and move to password
         self.temp_username = Some(username.to_string());
-        self.transition_to(SessionState::Unauthenticated(
+        let result = self.transition_to(SessionState::Unauthenticated(
             UnauthenticatedState::Password,
         ))
-        .await
+        .await;
+        
+        tracing::info!(
+            session_id = %self.session_id,
+            duration_ms = %start.elapsed().as_millis(),
+            username_len = %username.len(),
+            "handle_username_input: username accepted, transitioning to password"
+        );
+        
+        result
     }
 
     /// Handle password input
+    #[instrument(skip(self, adapter, input))]
     async fn handle_password_input(
         &mut self,
         adapter: &mut dyn ProtocolAdapter,
         input: String,
     ) -> Result<(), String> {
+        let start = std::time::Instant::now();
         let password = input.trim();
 
         if password.is_empty() {
@@ -204,6 +301,11 @@ impl StateHandler {
                 .send_line("Password cannot be empty.\r\n")
                 .await
                 .map_err(|e| e.to_string())?;
+            tracing::debug!(
+                session_id = %self.session_id,
+                duration_ms = %start.elapsed().as_millis(),
+                "handle_password_input: empty password rejected"
+            );
             return Ok(());
         }
 
@@ -213,21 +315,36 @@ impl StateHandler {
             .ok_or_else(|| "No username stored".to_string())?;
 
         // Authenticate with server
+        let send_start = std::time::Instant::now();
         adapter
             .send_line("Authenticating...\r\n")
             .await
             .map_err(|e| e.to_string())?;
+        tracing::debug!(
+            session_id = %self.session_id,
+            duration_ms = %send_start.elapsed().as_millis(),
+            "handle_password_input: sent authenticating message"
+        );
 
+        let rpc_start = std::time::Instant::now();
         let rpc_client = self.context.rpc_client();
-        match rpc_client
+        let auth_result = rpc_client
             .authenticate_session(
                 self.session_id.to_string(),
                 username.clone(),
                 password.to_string(),
                 self.address.clone(),
             )
-            .await
-        {
+            .await;
+        
+        tracing::info!(
+            session_id = %self.session_id,
+            duration_ms = %rpc_start.elapsed().as_millis(),
+            success = %auth_result.is_ok(),
+            "handle_password_input: RPC authenticate_session call completed"
+        );
+        
+        match auth_result {
             Ok(account_info) => {
                 tracing::info!(
                     "Session {} authenticated successfully for user {}",
@@ -235,21 +352,41 @@ impl StateHandler {
                     username
                 );
 
+                let welcome_start = std::time::Instant::now();
                 adapter
                     .send_line(&format!("Welcome back, {}!\r\n", account_info.login))
                     .await
                     .map_err(|e| e.to_string())?;
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    duration_ms = %welcome_start.elapsed().as_millis(),
+                    "handle_password_input: sent welcome message"
+                );
 
                 // Display MOTD
+                let motd_start = std::time::Instant::now();
                 let motd = self
                     .context
                     .properties_manager()
                     .get_property(GatewayProperty::BannerMotd)
                     .await
                     .unwrap_or_else(|_| String::from("\r\n=== MOTD Banner Fetch Error ===\r\n"));
+                
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    duration_ms = %motd_start.elapsed().as_millis(),
+                    motd_len = %motd.len(),
+                    "handle_password_input: fetched MOTD"
+                );
 
                 if !motd.is_empty() {
+                    let motd_send_start = std::time::Instant::now();
                     adapter.send_line(&motd).await.map_err(|e| e.to_string())?;
+                    tracing::debug!(
+                        session_id = %self.session_id,
+                        duration_ms = %motd_send_start.elapsed().as_millis(),
+                        "handle_password_input: sent MOTD"
+                    );
                 }
 
                 // Clear temp data
@@ -257,8 +394,21 @@ impl StateHandler {
                 self.temp_password = None;
 
                 // Transition to authenticated state
-                self.transition_to(SessionState::Authenticated(AuthenticatedState::Playing))
-                    .await
+                let transition_start = std::time::Instant::now();
+                let result = self.transition_to(SessionState::Authenticated(AuthenticatedState::Playing))
+                    .await;
+                
+                tracing::info!(
+                    session_id = %self.session_id,
+                    transition_duration_ms = %transition_start.elapsed().as_millis(),
+                    total_duration_ms = %start.elapsed().as_millis(),
+                    "handle_password_input: authentication flow completed successfully"
+                );
+
+                // Server now sends output (like character list) directly to client
+                // No need to fetch and forward queued events manually
+
+                result
             }
             Err(e) => {
                 tracing::warn!(
@@ -274,10 +424,18 @@ impl StateHandler {
 
                 // Clear temp data and return to username
                 self.temp_username = None;
-                self.transition_to(SessionState::Unauthenticated(
+                let result = self.transition_to(SessionState::Unauthenticated(
                     UnauthenticatedState::Username,
                 ))
-                .await
+                .await;
+                
+                tracing::info!(
+                    session_id = %self.session_id,
+                    total_duration_ms = %start.elapsed().as_millis(),
+                    "handle_password_input: authentication failed, returned to username"
+                );
+                
+                result
             }
         }
     }
@@ -565,6 +723,7 @@ impl StateHandler {
     }
 
     /// Handle input in authenticated state
+    #[instrument(skip(self, _adapter))]
     async fn handle_authenticated(
         &mut self,
         _adapter: &mut dyn ProtocolAdapter,
@@ -605,31 +764,33 @@ impl StateHandler {
 
     /// Send prompt for unauthenticated state
     async fn send_unauthenticated_prompt(
-        &self,
+        &mut self,
         adapter: &mut dyn ProtocolAdapter,
         substate: UnauthenticatedState,
     ) -> Result<(), String> {
         match substate {
             UnauthenticatedState::Welcome => {
-                // Display welcome banner
-                let welcome_banner = self
-                    .context
-                    .properties_manager()
-                    .get_property(GatewayProperty::BannerWelcome)
-                    .await
-                    .unwrap_or_else(|_| String::from("\r\n=== Welcome Banner Fetch Error ===\r\n"));
+                // Display banners and username prompt concurrently to speed up connection
+                let properties_manager = self.context.properties_manager().clone();
+                
+                // Fetch both properties in a single RPC call if not in cache
+                let _ = properties_manager.refresh_cached_properties(&[
+                    GatewayProperty::BannerWelcome,
+                    GatewayProperty::BannerLogin,
+                ]).await;
+                
+                let welcome_banner_task = properties_manager.get_property(GatewayProperty::BannerWelcome);
+                let login_banner_task = properties_manager.get_property(GatewayProperty::BannerLogin);
+                
+                let (welcome_banner, login_banner) = tokio::join!(welcome_banner_task, login_banner_task);
+                
+                let welcome_banner = welcome_banner.unwrap_or_else(|_| BANNER_WELCOME_DEFAULT.to_string());
+                let login_banner = login_banner.unwrap_or_else(|_| BANNER_LOGIN_DEFAULT.to_string());
 
                 adapter
                     .send_line(&welcome_banner)
                     .await
                     .map_err(|e| e.to_string())?;
-
-                let login_banner = self
-                    .context
-                    .properties_manager()
-                    .get_property(GatewayProperty::BannerLogin)
-                    .await
-                    .unwrap_or_else(|_| String::from("\r\n=== Login Banner Fetch Error ===\r\n"));
 
                 adapter
                     .send_line(&login_banner)
@@ -646,18 +807,27 @@ impl StateHandler {
                 adapter
                     .send_text("Username (or 'n' for new account): ")
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                
+                // Flush to ensure prompt is sent immediately
+                adapter.flush().await.map_err(|e| e.to_string())
             }
 
-            UnauthenticatedState::Username => adapter
-                .send_text("Username (or 'n' for new account): ")
-                .await
-                .map_err(|e| e.to_string()),
+            UnauthenticatedState::Username => {
+                adapter
+                    .send_text("Username (or 'n' for new account): ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
-            UnauthenticatedState::Password => adapter
-                .send_text("Password: ")
-                .await
-                .map_err(|e| e.to_string()),
+            UnauthenticatedState::Password => {
+                adapter
+                    .send_text("Password: ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
             UnauthenticatedState::NewAccount(new_state) => {
                 self.send_new_account_prompt(adapter, new_state).await
@@ -667,7 +837,7 @@ impl StateHandler {
 
     /// Send prompt for new account state
     async fn send_new_account_prompt(
-        &self,
+        &mut self,
         adapter: &mut dyn ProtocolAdapter,
         substate: NewAccountState,
     ) -> Result<(), String> {
@@ -688,38 +858,57 @@ impl StateHandler {
                 adapter
                     .send_text("Choose a username (3-20 characters, letters/numbers/_): ")
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
             }
 
-            NewAccountState::Username => adapter
-                .send_text("Choose a username (3-20 characters, letters/numbers/_): ")
-                .await
-                .map_err(|e| e.to_string()),
+            NewAccountState::Username => {
+                adapter
+                    .send_text("Choose a username (3-20 characters, letters/numbers/_): ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
-            NewAccountState::Password => adapter
-                .send_text("Choose a password (minimum 6 characters): ")
-                .await
-                .map_err(|e| e.to_string()),
+            NewAccountState::Password => {
+                adapter
+                    .send_text("Choose a password (minimum 6 characters): ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
-            NewAccountState::PasswordConfirm => adapter
-                .send_text("Confirm password: ")
-                .await
-                .map_err(|e| e.to_string()),
+            NewAccountState::PasswordConfirm => {
+                adapter
+                    .send_text("Confirm password: ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
-            NewAccountState::Email => adapter
-                .send_text("Email address (press Enter to skip): ")
-                .await
-                .map_err(|e| e.to_string()),
+            NewAccountState::Email => {
+                adapter
+                    .send_text("Email address (press Enter to skip): ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
-            NewAccountState::Discord => adapter
-                .send_text("Discord username (press Enter to skip): ")
-                .await
-                .map_err(|e| e.to_string()),
+            NewAccountState::Discord => {
+                adapter
+                    .send_text("Discord username (press Enter to skip): ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
-            NewAccountState::Timezone => adapter
-                .send_text("Timezone (e.g., America/Los_Angeles, press Enter to skip): ")
-                .await
-                .map_err(|e| e.to_string()),
+            NewAccountState::Timezone => {
+                adapter
+                    .send_text("Timezone (e.g., America/Los_Angeles, press Enter to skip): ")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                adapter.flush().await.map_err(|e| e.to_string())
+            }
 
             NewAccountState::Creating => {
                 Ok(()) // No prompt while creating
@@ -728,11 +917,32 @@ impl StateHandler {
     }
 
     /// Transition to a new state
-    async fn transition_to(&self, new_state: SessionState) -> Result<(), String> {
-        self.context
+    async fn transition_to(&mut self, new_state: SessionState) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        let old_state = self.cached_state.to_metric_str();
+        let new_state_str = new_state.to_metric_str();
+        
+        // Update cached state
+        self.cached_state = new_state.clone();
+        
+        // Update session manager
+        let manager_start = std::time::Instant::now();
+        let result = self.context
             .session_manager()
             .transition_session(self.session_id, new_state)
-            .await
+            .await;
+        
+        tracing::info!(
+            session_id = %self.session_id,
+            old_state = %old_state,
+            new_state = %new_state_str,
+            manager_duration_ms = %manager_start.elapsed().as_millis(),
+            total_duration_ms = %start.elapsed().as_millis(),
+            success = %result.is_ok(),
+            "transition_to completed"
+        );
+        
+        result
     }
 
     /// Validate username format

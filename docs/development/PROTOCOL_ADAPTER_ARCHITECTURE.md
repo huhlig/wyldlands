@@ -80,7 +80,7 @@ pub struct WebSocketAdapter {
 Both protocols are used identically in the connection handlers:
 
 ```rust
-// Create adapter (protocol-specific)
+// Create adapter (sidechannel-specific)
 let mut adapter = TelnetAdapter::new(stream);
 // or
 let mut adapter = WebSocketAdapter::new(socket);
@@ -88,7 +88,7 @@ let mut adapter = WebSocketAdapter::new(socket);
 // Negotiate options (if needed)
 adapter.negotiate_options().await?;
 
-// Use adapter (protocol-agnostic)
+// Use adapter (sidechannel-agnostic)
 adapter.send_line("Welcome!").await?;
 
 loop {

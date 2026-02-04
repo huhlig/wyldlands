@@ -158,7 +158,7 @@ pub struct MsdpHandler {
 
 impl MsdpHandler {
     pub fn send_variable(&self, key: &str, value: &str) -> Vec<u8> {
-        // MSDP protocol encoding
+        // MSDP sidechannel encoding
         let mut data = vec![IAC, SB, MSDP, MSDP_VAR];
         data.extend_from_slice(key.as_bytes());
         data.push(MSDP_VAL);
@@ -282,5 +282,5 @@ Side channel support is validated by:
 
 - MSDP Specification: [termionix/doc/msdp.md](../../termionix/doc/msdp.md)
 - GMCP Specification: [termionix/doc/gmcp.md](../../termionix/doc/gmcp.md)
-- Protocol Handler: [gateway/src/protocol/](../../gateway/src/protocol/)
+- Protocol Handler: [gateway/src/protocol/](../../gateway/src/sidechannel/)
 - Session State Engine: [docs/development/SESSION_STATE_ENGINE.md](../development/SESSION_STATE_ENGINE.md)

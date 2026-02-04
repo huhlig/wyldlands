@@ -33,6 +33,7 @@ use crate::ecs::EcsEntity;
 use crate::ecs::components::{Avatar, Combatant, Commandable, Location};
 use crate::ecs::context::WorldContext;
 use crate::ecs::events::{EventBus, GameEvent};
+use tracing::instrument;
 use hecs::Entity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -381,6 +382,7 @@ impl CommandSystem {
     }
 
     /// Execute a command
+    #[instrument(skip(self, context))]
     pub async fn execute(
         &mut self,
         context: Arc<WorldContext>,

@@ -16,23 +16,22 @@
 
 //! Termionix-based telnet adapter implementation
 
-use crate::server::{ClientCapabilities, ProtocolAdapter, ProtocolError, ProtocolMessage};
+use crate::server::{ClientCapabilities, InputMode, ProtocolAdapter, ProtocolError, ProtocolMessage};
 use async_trait::async_trait;
-use termionix_service::{ConnectionId, TelnetConnection};
-use termionix_terminal::TerminalEvent;
+use termionix_server::{ConnectionId, TelnetConnection, TerminalEvent};
 use tokio::sync::mpsc;
 use wyldlands_common::proto::StructuredOutput;
 
-// Import MSDP and GMCP from crate root (re-exported from protocol module)
-use crate::protocol::gmcp::{self, GmcpMessage};
-use crate::protocol::msdp::{self, MsdpCommand};
+// Import MSDP and GMCP from crate root (re-exported from sidechannel module)
+use crate::sidechannel::gmcp::{self, GmcpMessage};
+use crate::sidechannel::msdp::{self, MsdpCommand};
 
 /// Adapter that wraps a Termionix TelnetConnection to implement ProtocolAdapter
 pub struct TermionixAdapter {
     connection: TelnetConnection,
-    connection_id: ConnectionId,
     capabilities: ClientCapabilities,
     event_receiver: mpsc::UnboundedReceiver<TerminalEvent>,
+    input_mode: InputMode,
     alive: bool,
 }
 
@@ -40,7 +39,6 @@ impl TermionixAdapter {
     /// Create a new adapter from a Termionix connection
     pub fn new(
         connection: TelnetConnection,
-        connection_id: ConnectionId,
         event_receiver: mpsc::UnboundedReceiver<TerminalEvent>,
     ) -> Self {
         // Extract capabilities from connection
@@ -56,16 +54,16 @@ impl TermionixAdapter {
 
         Self {
             connection,
-            connection_id,
             capabilities,
             event_receiver,
+            input_mode: InputMode::Line,
             alive: true,
         }
     }
 
     /// Get the connection ID
     pub fn connection_id(&self) -> ConnectionId {
-        self.connection_id
+        self.connection.id()
     }
 
     /// Update capabilities from terminal events
@@ -143,13 +141,13 @@ impl TermionixAdapter {
     /// Called when MSDP negotiation succeeds
     pub fn enable_msdp(&mut self) {
         self.capabilities.msdp = true;
-        tracing::info!("MSDP enabled for connection {}", self.connection_id);
+        tracing::info!("MSDP enabled for connection {}", self.connection.id());
     }
 
     /// Disable MSDP capability
     pub fn disable_msdp(&mut self) {
         self.capabilities.msdp = false;
-        tracing::info!("MSDP disabled for connection {}", self.connection_id);
+        tracing::info!("MSDP disabled for connection {}", self.connection.id());
     }
 
     /// Process an MSDP command from the client
@@ -231,13 +229,13 @@ impl TermionixAdapter {
     /// Called when GMCP negotiation succeeds
     pub fn enable_gmcp(&mut self) {
         self.capabilities.gmcp = true;
-        tracing::info!("GMCP enabled for connection {}", self.connection_id);
+        tracing::info!("GMCP enabled for connection {}", self.connection.id());
     }
 
     /// Disable GMCP capability
     pub fn disable_gmcp(&mut self) {
         self.capabilities.gmcp = false;
-        tracing::info!("GMCP disabled for connection {}", self.connection_id);
+        tracing::info!("GMCP disabled for connection {}", self.connection.id());
     }
 
     /// Process a GMCP message from the client
@@ -256,7 +254,7 @@ impl ProtocolAdapter for TermionixAdapter {
     }
 
     async fn send_text(&mut self, text: &str) -> Result<(), ProtocolError> {
-        self.connection.send(text).await.map_err(|e| {
+        self.connection.send(text, true).await.map_err(|e| {
             self.alive = false;
             ProtocolError::ProtocolError(e.to_string())
         })
@@ -266,7 +264,7 @@ impl ProtocolAdapter for TermionixAdapter {
         // Convert binary data to string for sending
         // Termionix handles binary data through its terminal codec
         let text = String::from_utf8_lossy(data).to_string();
-        self.connection.send(text.as_str()).await.map_err(|e| {
+        self.connection.send(text.as_str(), true).await.map_err(|e| {
             self.alive = false;
             ProtocolError::ProtocolError(e.to_string())
         })
@@ -280,54 +278,70 @@ impl ProtocolAdapter for TermionixAdapter {
             format!("{}\r\n", text.trim_end_matches('\n').trim_end_matches('\r'))
         };
 
-        self.connection.send(&line).await.map_err(|e| {
+        self.connection.send(&line, true).await.map_err(|e| {
+            self.alive = false;
+            ProtocolError::ProtocolError(e.to_string())
+        })
+    }
+
+    async fn flush(&mut self) -> Result<(), ProtocolError> {
+        self.connection.flush().await.map_err(|e| {
             self.alive = false;
             ProtocolError::ProtocolError(e.to_string())
         })
     }
 
     async fn receive(&mut self) -> Result<Option<ProtocolMessage>, ProtocolError> {
-        // Receive events from the event channel
-        match self.event_receiver.recv().await {
-            Some(event) => {
-                // Update capabilities if needed
-                self.update_capabilities_from_event(&event);
+        loop {
+            match self.event_receiver.recv().await {
+                Some(event) => {
+                    // Update capabilities if needed
+                    self.update_capabilities_from_event(&event);
 
-                match event {
-                    TerminalEvent::LineCompleted { line, .. } => {
-                        // Convert SegmentedString to plain string
-                        Ok(Some(ProtocolMessage::Text(line.to_string())))
-                    }
-                    TerminalEvent::CharacterData { character, .. } => {
-                        // For character-by-character input (editing mode)
-                        Ok(Some(ProtocolMessage::Text(character.to_string())))
-                    }
-                    TerminalEvent::Disconnected => {
-                        self.alive = false;
-                        Ok(Some(ProtocolMessage::Disconnected))
-                    }
-                    TerminalEvent::WindowSize { width, height } => {
-                        Ok(Some(ProtocolMessage::Negotiation(
-                            crate::server::NegotiationData::WindowSize(width, height),
-                        )))
-                    }
-                    TerminalEvent::TerminalType { terminal_type } => {
-                        Ok(Some(ProtocolMessage::Negotiation(
-                            crate::server::NegotiationData::TerminalType(terminal_type),
-                        )))
-                    }
-                    _ => {
-                        // Other events we don't handle yet
-                        Ok(None)
+                    match event {
+                        TerminalEvent::LineCompleted { line, .. } => {
+                            // Convert SegmentedString to plain string
+                            return Ok(Some(ProtocolMessage::Text(line.to_string())));
+                        }
+                        TerminalEvent::CharacterData { character, .. } => {
+                            // Only return character data if in character mode
+                            if self.input_mode == InputMode::Character {
+                                return Ok(Some(ProtocolMessage::Text(character.to_string())));
+                            }
+                            // Otherwise, ignore individual characters and keep waiting
+                            continue;
+                        }
+                        TerminalEvent::Disconnected => {
+                            self.alive = false;
+                            return Ok(Some(ProtocolMessage::Disconnected));
+                        }
+                        TerminalEvent::WindowSize { width, height } => {
+                            return Ok(Some(ProtocolMessage::Negotiation(
+                                crate::server::NegotiationData::WindowSize(width, height),
+                            )));
+                        }
+                        TerminalEvent::TerminalType { terminal_type } => {
+                            return Ok(Some(ProtocolMessage::Negotiation(
+                                crate::server::NegotiationData::TerminalType(terminal_type),
+                            )));
+                        }
+                        _ => {
+                            // Ignore other events and keep waiting
+                            continue;
+                        }
                     }
                 }
-            }
-            None => {
-                // Channel closed
-                self.alive = false;
-                Ok(Some(ProtocolMessage::Disconnected))
+                None => {
+                    // Channel closed
+                    self.alive = false;
+                    return Ok(Some(ProtocolMessage::Disconnected));
+                }
             }
         }
+    }
+
+    fn set_input_mode(&mut self, mode: InputMode) {
+        self.input_mode = mode;
     }
 
     async fn close(&mut self) -> Result<(), ProtocolError> {

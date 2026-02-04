@@ -49,6 +49,7 @@ impl SessionManager {
     }
 
     /// Create a new session
+    #[tracing::instrument(skip(self))]
     pub async fn create_session(
         &self,
         protocol: ProtocolType,
@@ -74,12 +75,14 @@ impl SessionManager {
     }
 
     /// Get a session by ID
+    #[tracing::instrument(skip(self))]
     pub async fn get_session(&self, id: Uuid) -> Option<GatewaySession> {
         let sessions = self.sessions.read().await;
         sessions.get(&id).cloned()
     }
 
     /// Update a session
+    #[tracing::instrument(skip(self))]
     pub async fn update_session(&self, session: GatewaySession) -> Result<(), String> {
         let mut sessions = self.sessions.write().await;
         sessions.insert(session.session_id, session);
@@ -87,6 +90,7 @@ impl SessionManager {
     }
 
     /// Remove a session
+    #[tracing::instrument(skip(self))]
     pub async fn remove_session(&self, id: Uuid) -> Result<(), String> {
         let mut sessions = self.sessions.write().await;
         sessions.remove(&id);
@@ -102,11 +106,13 @@ impl SessionManager {
     }
 
     /// Delete a session (alias for remove_session)
+    #[tracing::instrument(skip(self))]
     pub async fn delete_session(&self, id: Uuid) -> Result<(), String> {
         self.remove_session(id).await
     }
 
     /// Touch a session (update last activity)
+    #[tracing::instrument(skip(self))]
     pub async fn touch_session(&self, id: Uuid) -> Result<(), String> {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(&id) {
@@ -118,31 +124,65 @@ impl SessionManager {
     }
 
     /// Transition a session to a new state
+    #[tracing::instrument(skip(self))]
     pub async fn transition_session(
         &self,
         id: Uuid,
         new_state: SessionState,
     ) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        
+        let lock_start = std::time::Instant::now();
         let mut sessions = self.sessions.write().await;
+        let lock_duration = lock_start.elapsed();
+        
+        tracing::debug!(
+            session_id = %id,
+            lock_wait_ms = %lock_duration.as_millis(),
+            "transition_session: acquired write lock"
+        );
+        
         if let Some(session) = sessions.get_mut(&id) {
-            let old_state = session.state.clone();
-            let new_state_clone = new_state.clone();
-            session.transition(new_state)?;
+            let old_metric_str = session.state.to_metric_str();
+            let new_metric_str = new_state.to_metric_str();
 
-            // Record metrics
-            let old_state_str = format!("{:?}", old_state);
-            let new_state_str = format!("{:?}", new_state_clone);
-            gauge!("gateway_sessions_by_state", "state" => old_state_str.clone()).decrement(1.0);
-            gauge!("gateway_sessions_by_state", "state" => new_state_str.clone()).increment(1.0);
-            event!(Level::DEBUG, old_state = %old_state_str, new_state = %new_state_str, metric = "session_state_change", "Session state changed");
+            let transition_start = std::time::Instant::now();
+            let result = session.transition(new_state);
+            let transition_duration = transition_start.elapsed();
 
-            Ok(())
+            if result.is_ok() {
+                // Record metrics
+                gauge!("gateway_sessions_by_state", "state" => old_metric_str).decrement(1.0);
+                gauge!("gateway_sessions_by_state", "state" => new_metric_str).increment(1.0);
+                event!(Level::DEBUG, old_state = %old_metric_str, new_state = %new_metric_str, metric = "session_state_change", "Session state changed");
+            }
+
+            let total_duration = start.elapsed();
+            tracing::info!(
+                session_id = %id,
+                old_state = %old_metric_str,
+                new_state = %new_metric_str,
+                lock_wait_ms = %lock_duration.as_millis(),
+                transition_ms = %transition_duration.as_millis(),
+                total_ms = %total_duration.as_millis(),
+                success = %result.is_ok(),
+                "transition_session completed"
+            );
+
+            result
         } else {
+            let total_duration = start.elapsed();
+            tracing::warn!(
+                session_id = %id,
+                total_ms = %total_duration.as_millis(),
+                "transition_session: session not found"
+            );
             Err("Session not found".to_string())
         }
     }
 
     /// Cleanup expired sessions
+    #[tracing::instrument(skip(self))]
     pub async fn cleanup_expired(&self) -> Result<usize, String> {
         let mut expired_ids = Vec::new();
 
@@ -186,6 +226,7 @@ impl SessionManager {
     }
 
     /// Queue a command for a disconnected session
+    #[tracing::instrument(skip(self))]
     pub async fn queue_command(&self, session_id: Uuid, command: &str) -> Result<(), String> {
         let mut queued = self.queued_commands.write().await;
         queued
@@ -196,6 +237,7 @@ impl SessionManager {
     }
 
     /// Get and clear queued commands for a session
+    #[tracing::instrument(skip(self))]
     pub async fn get_and_clear_queued_commands(
         &self,
         session_id: Uuid,
@@ -362,11 +404,11 @@ mod tests {
         let session = manager.get_session(session_id).await.unwrap();
         assert_eq!(session.state, SessionState::Disconnected);
 
-        // Invalid transition: Disconnected -> Unauthenticated (not allowed)
+        // Invalid transition: Disconnected -> Username (not allowed)
         let result = manager
             .transition_session(
                 session_id,
-                SessionState::Unauthenticated(UnauthenticatedState::Welcome),
+                SessionState::Unauthenticated(UnauthenticatedState::Username),
             )
             .await;
         assert!(result.is_err());

@@ -275,7 +275,7 @@ async fn get_stats(
             *sessions_by_state.entry(state).or_insert(0) += 1;
         }
 
-        // Get connections by protocol
+        // Get connections by sidechannel
         let telnet_count = connection_pool
             .count_by_protocol(ProtocolType::Telnet)
             .await;

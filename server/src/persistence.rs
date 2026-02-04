@@ -32,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::instrument;
 use uuid::Uuid;
 
 /// Persistence manager for ECS entities
@@ -76,7 +77,7 @@ impl PersistenceManager {
         .await
     }
 
-    /// Get account by username from database
+    /// Get an account by username from database
     pub async fn get_account_by_username(
         &self,
         username: &str,
@@ -97,12 +98,17 @@ impl PersistenceManager {
         username: &str,
         password: &str,
     ) -> Result<Option<crate::account::Account>, sqlx::Error> {
+        tracing::info!(
+            "Authenticating account with username '{username}' and password '{password}'"
+        );
         sqlx::query_as::<_, crate::account::Account>(
             "SELECT id, login, display, timezone, discord, email, rating, active, role
              FROM wyldlands.accounts
-             WHERE LOWER(login) = LOWER($1) AND password = crypt($2, gen_salt('bf'))",
+             WHERE LOWER(login) = LOWER($1)
+               AND password = crypt($2, password)",
         )
         .bind(username)
+        .bind(password)
         .fetch_optional(&self.pool)
         .await
     }
@@ -455,6 +461,7 @@ impl PersistenceManager {
 
     /// Load any entity from database by entity UUID
     /// Loads all components that exist for the entity (characters, rooms, objects, NPCs, etc.)
+    #[instrument(skip(self, world, registry))]
     pub async fn load_entity(
         &self,
         world: &mut GameWorld,
@@ -505,6 +512,7 @@ impl PersistenceManager {
     /// Excludes inactive player character avatars (available = false)
     /// Loads: Areas, Rooms, NPCs, Objects, Active Players, etc.
     /// Note: All entities in the database are considered persistent by default
+    #[instrument(skip(self, world, registry))]
     pub async fn load_world(
         &self,
         world: &mut GameWorld,
@@ -1443,6 +1451,7 @@ impl PersistenceManager {
 
     /// Save any entity to database
     /// Saves all components attached to the entity (characters, rooms, objects, NPCs, etc.)
+    #[instrument(skip(self, world))]
     pub async fn save_entity(&self, world: &GameWorld, entity_id: EcsEntity) -> Result<(), String> {
         // Get entity UUID
         let entity_uuid = world
@@ -2394,6 +2403,7 @@ impl PersistenceManager {
     }
 
     /// Auto-save all dirty entities
+    #[instrument(skip(self, world))]
     pub async fn auto_save(&self, world: &GameWorld) -> Result<usize, String> {
         let dirty_uuids = self.get_dirty_entities().await;
 

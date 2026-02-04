@@ -20,6 +20,7 @@ use crate::ecs::components::{Commandable, EntityId, Exits, Location};
 use crate::ecs::events::{EventBus, GameEvent};
 use crate::ecs::{EcsEntity, GameWorld};
 use hecs::Entity;
+use tracing::instrument;
 
 pub struct MovementSystem {
     event_bus: EventBus,
@@ -32,6 +33,7 @@ impl MovementSystem {
     }
 
     /// Update the movement system, processing queued movement commands
+    #[instrument(skip(self, world))]
     pub fn update(&mut self, world: &mut GameWorld, _delta_time: f32) {
         let mut movements = Vec::new();
 
@@ -64,6 +66,7 @@ impl MovementSystem {
     }
 
     /// Move an entity in a direction
+    #[instrument(skip(self, world))]
     fn move_entity(&mut self, world: &mut GameWorld, entity: EcsEntity, direction: &str) {
         // Normalize direction
         let normalized_direction = Self::normalize_direction(direction);

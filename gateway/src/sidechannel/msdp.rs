@@ -16,7 +16,7 @@
 
 //! MSDP (Mud Server Data Protocol) Implementation
 //!
-//! This module implements the MSDP protocol for sending structured data
+//! This module implements the MSDP sidechannel for sending structured data
 //! to MUD clients over telnet. MSDP uses telnet option 69.
 //!
 //! Reference: https://tintin.mudhalla.net/protocols/msdp/
@@ -27,7 +27,7 @@ use wyldlands_common::proto::{DataArray, DataTable, DataValue, StructuredOutput}
 /// MSDP telnet option number
 pub const MSDP: u8 = 69;
 
-/// MSDP protocol constants
+/// MSDP sidechannel constants
 pub const MSDP_VAR: u8 = 1;
 pub const MSDP_VAL: u8 = 2;
 pub const MSDP_TABLE_OPEN: u8 = 3;
@@ -35,7 +35,7 @@ pub const MSDP_TABLE_CLOSE: u8 = 4;
 pub const MSDP_ARRAY_OPEN: u8 = 5;
 pub const MSDP_ARRAY_CLOSE: u8 = 6;
 
-/// Telnet protocol constants
+/// Telnet sidechannel constants
 pub const IAC: u8 = 255;
 pub const SB: u8 = 250;
 pub const SE: u8 = 240;

@@ -35,14 +35,14 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 serde-env-field.workspace = true
+termionix-server.workspace = true
 termionix-service.workspace = true
-termionix-terminal.workspace = true
-termionix-ansicodec.workspace = true
-termionix-telnetcodec.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tracing.workspace = true
+tracing-flame.workspace = true
 tracing-subscriber.workspace = true
+tracing-timing.workspace = true
 wyldlands-common.workspace = true
 uuid.workspace = true
 

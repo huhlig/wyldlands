@@ -98,7 +98,7 @@ This document outlines the implementation of side channel protocols for structur
 Create `gateway/src/protocol/msdp.rs`:
 
 ```rust
-/// MSDP protocol constants
+/// MSDP sidechannel constants
 pub const MSDP: u8 = 69;
 pub const MSDP_VAR: u8 = 1;
 pub const MSDP_VAL: u8 = 2;
@@ -134,7 +134,7 @@ pub enum MsdpCommand {
 Create `gateway/src/protocol/gmcp.rs`:
 
 ```rust
-/// GMCP protocol constants
+/// GMCP sidechannel constants
 pub const GMCP: u8 = 201;
 
 /// Convert StructuredOutput to GMCP JSON format
@@ -222,7 +222,7 @@ impl WebSocketAdapter {
 Create `gateway/src/output_router.rs`:
 
 ```rust
-/// Routes structured output to appropriate protocol format
+/// Routes structured output to appropriate sidechannel format
 pub struct OutputRouter {
     msdp_encoder: MsdpEncoder,
     gmcp_encoder: GmcpEncoder,

@@ -72,6 +72,32 @@ pub enum SessionState {
 }
 
 impl SessionState {
+    /// Get a string representation for metrics, avoiding large data copies
+    pub fn to_metric_str(&self) -> &'static str {
+        match self {
+            SessionState::Unauthenticated(s) => match s {
+                UnauthenticatedState::Welcome => "unauthenticated:welcome",
+                UnauthenticatedState::Username => "unauthenticated:username",
+                UnauthenticatedState::Password => "unauthenticated:password",
+                UnauthenticatedState::NewAccount(ns) => match ns {
+                    NewAccountState::Banner => "unauthenticated:new_account:banner",
+                    NewAccountState::Username => "unauthenticated:new_account:username",
+                    NewAccountState::Password => "unauthenticated:new_account:password",
+                    NewAccountState::PasswordConfirm => "unauthenticated:new_account:password_confirm",
+                    NewAccountState::Email => "unauthenticated:new_account:email",
+                    NewAccountState::Discord => "unauthenticated:new_account:discord",
+                    NewAccountState::Timezone => "unauthenticated:new_account:timezone",
+                    NewAccountState::Creating => "unauthenticated:new_account:creating",
+                },
+            },
+            SessionState::Authenticated(s) => match s {
+                AuthenticatedState::Playing => "authenticated:playing",
+                AuthenticatedState::Editing { .. } => "authenticated:editing",
+            },
+            SessionState::Disconnected => "disconnected",
+        }
+    }
+
     /// Check if session is in an authenticated state
     pub fn is_authenticated(&self) -> bool {
         matches!(self, SessionState::Authenticated(_))
@@ -250,9 +276,9 @@ impl SideChannelCapabilities {
 /// Side channel type enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SideChannelType {
-    /// MSDP protocol
+    /// MSDP sidechannel
     MSDP,
-    /// GMCP protocol
+    /// GMCP sidechannel
     GMCP,
     /// WebSocket JSON
     WebSocketJSON,
@@ -287,31 +313,57 @@ impl GatewaySession {
     }
 
     /// Transition to a new state
+
     pub fn transition(&mut self, new_state: SessionState) -> Result<(), String> {
-        use SessionState::*;
-
+        #[rustfmt::skip]
         let valid = match (&self.state, &new_state) {
-            // From Unauthenticated
-            (Unauthenticated(_), Authenticated(_)) => true,
-            (Unauthenticated(_), Disconnected) => true,
+            // Normal Login Path
+            (SessionState::Unauthenticated(UnauthenticatedState::Welcome), SessionState::Unauthenticated(UnauthenticatedState::Username)) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::Welcome), SessionState::Authenticated(AuthenticatedState::Playing)) => true, // Shortcut for testing/reconnection
+            (SessionState::Unauthenticated(UnauthenticatedState::Username), SessionState::Unauthenticated(UnauthenticatedState::Password)) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::Password), SessionState::Unauthenticated(UnauthenticatedState::Username)) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::Password), SessionState::Authenticated(AuthenticatedState::Playing)) => true,
 
-            // From Authenticated
-            (Authenticated(_), Disconnected) => true,
+            // New Account Path
+            (SessionState::Unauthenticated(UnauthenticatedState::Username), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Banner))) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Banner)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Username))) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Username)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Password)) ) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Password)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::PasswordConfirm)) ) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::PasswordConfirm)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Email)) ) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Email)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Discord)) ) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Discord)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Timezone)) ) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Timezone)), SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Creating)) ) => true,
+            (SessionState::Unauthenticated(UnauthenticatedState::NewAccount(NewAccountState::Creating)), SessionState::Authenticated(AuthenticatedState::Playing) ) => true,
 
-            // Same state is always valid
-            (s1, s2) if s1 == s2 => true,
+            // While Authenticated
+            (SessionState::Authenticated(AuthenticatedState::Playing), SessionState::Authenticated(AuthenticatedState::Editing { .. })) => true,
+            (SessionState::Authenticated(AuthenticatedState::Editing { .. }), SessionState::Authenticated(AuthenticatedState::Playing)) => true,
+
+            // Handle Disconnects
+            (SessionState::Unauthenticated(_), SessionState::Disconnected) => true,
+            (SessionState::Authenticated(_), SessionState::Disconnected) => true,
+            (SessionState::Disconnected, SessionState::Authenticated(AuthenticatedState::Playing)) => true, // Reconnection Path
+            (SessionState::Disconnected, SessionState::Unauthenticated(UnauthenticatedState::Welcome)) => true, // Reset Path
+
+            // Transition to the same variant is always valid
+            // We compare variants manually to avoid full string comparisons in AuthenticatedState::Editing
+            (SessionState::Unauthenticated(s1), SessionState::Unauthenticated(s2)) if s1 == s2 => true,
+            (SessionState::Authenticated(AuthenticatedState::Playing), SessionState::Authenticated(AuthenticatedState::Playing)) => true,
+            (SessionState::Authenticated(AuthenticatedState::Editing { .. }), SessionState::Authenticated(AuthenticatedState::Editing { .. })) => true,
+            (SessionState::Disconnected, SessionState::Disconnected) => true,
 
             _ => false,
         };
 
         if valid {
+            tracing::debug!("Transitioning session from {:?} to {:?}", self.state.to_metric_str(), new_state.to_metric_str());
             self.state = new_state;
             self.touch();
             Ok(())
         } else {
             Err(format!(
-                "Invalid state transition from {:?} to {:?}",
-                self.state, new_state
+                "Invalid gateway state transition from {:?} to {:?}",
+                self.state.to_metric_str(), new_state.to_metric_str()
             ))
         }
     }
@@ -336,7 +388,21 @@ mod tests {
     fn test_session_state_transitions() {
         let mut session = GatewaySession::new(ProtocolType::Telnet, "127.0.0.1:1234".to_string());
 
-        // Valid transitions: Unauthenticated -> Authenticated
+        // Valid transitions: Welcome -> Username
+        assert!(
+            session
+                .transition(SessionState::Unauthenticated(UnauthenticatedState::Username))
+                .is_ok()
+        );
+
+        // Valid transitions: Username -> Password
+        assert!(
+            session
+                .transition(SessionState::Unauthenticated(UnauthenticatedState::Password))
+                .is_ok()
+        );
+
+        // Valid transitions: Password -> Authenticated
         assert!(
             session
                 .transition(SessionState::Authenticated(AuthenticatedState::Playing))
@@ -357,27 +423,16 @@ mod tests {
 
     #[test]
     fn test_session_disconnect_transitions() {
-        // Test logout.txt from Authenticated state
+        // Test logout from Authenticated state
         let mut session = GatewaySession::new(ProtocolType::Telnet, "127.0.0.1:1234".to_string());
-        assert!(
-            session
-                .transition(SessionState::Authenticated(AuthenticatedState::Playing))
-                .is_ok()
-        );
+
+        // Go through proper login path
+        session.transition(SessionState::Unauthenticated(UnauthenticatedState::Username)).unwrap();
+        session.transition(SessionState::Unauthenticated(UnauthenticatedState::Password)).unwrap();
+        session.transition(SessionState::Authenticated(AuthenticatedState::Playing)).unwrap();
+
         assert!(session.transition(SessionState::Disconnected).is_ok());
         assert_eq!(session.state, SessionState::Disconnected);
-
-        // Test reconnect from Disconnected to Authenticated
-        let mut session = GatewaySession::new(ProtocolType::Telnet, "127.0.0.1:1234".to_string());
-        assert!(
-            session
-                .transition(SessionState::Authenticated(AuthenticatedState::Playing))
-                .is_ok()
-        );
-        assert!(session.transition(SessionState::Disconnected).is_ok());
-        // Since I removed transition from Disconnected to Authenticated for now (due to missing variants),
-        // I should probably check what the intended behavior was.
-        // But for now, let's just make it compile.
     }
 
     #[test]
@@ -434,5 +489,3 @@ mod tests {
         assert!(caps.msdp_reported_variables.is_empty());
     }
 }
-
-

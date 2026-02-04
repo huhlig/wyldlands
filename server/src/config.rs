@@ -79,6 +79,9 @@ pub struct GatewayListenerConfig {
 
     /// Authentication key for gateway-to-server communication
     pub auth_key: EnvField<GatewayListenerAuthKey>,
+
+    /// Gateway address for server-to-gateway communication
+    pub gateway_addr: EnvField<String>,
 }
 
 impl Default for GatewayListenerConfig {
@@ -86,6 +89,7 @@ impl Default for GatewayListenerConfig {
         Self {
             addr: Default::default(),
             auth_key: Default::default(),
+            gateway_addr: "localhost:6005".to_string().into(),
         }
     }
 }

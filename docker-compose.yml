@@ -40,7 +40,7 @@ services:
       WYLDLANDS_DATABASE_URL: postgres://postgres:postgres@wyldlands-database:5432/postgres
       WYLDLANDS_LISTENER_ADDR: 0.0.0.0:6006
       WYLDLANDS_AUTH_KEY: wyldlands-docker-auth-key
-      RUST_LOG: debug
+      RUST_LOG: "wyldlands_server=debug,info"
     depends_on:
       database:
         condition: service_healthy
@@ -63,7 +63,7 @@ services:
       WYLDLANDS_WEBSOCKET_ADDR: 0.0.0.0:8080
       WYLDLANDS_SERVER_ADDR: wyldlands-server:6006
       WYLDLANDS_AUTH_KEY: wyldlands-docker-auth-key
-      RUST_LOG: debug
+      RUST_LOG: "wyldlands_gateway=debug,info"
     ports:
       - "4000:4000"  # Telnet
       - "8080:8080"  # WebSocket/HTTP

@@ -41,7 +41,7 @@ pub struct PropertiesManager {
     rpc_client: Arc<crate::grpc::RpcClientManager>,
 
     /// Cached banners
-    cache: Arc<RwLock<HashMap<GatewayProperty, (String, SystemTime)>>>,
+    cache: Arc<RwLock<Cache>>,
 
     /// Cache TTL
     cache_ttl: Duration,
@@ -52,63 +52,75 @@ impl PropertiesManager {
     pub fn new(rpc_client: Arc<crate::grpc::RpcClientManager>, cache_ttl_secs: u64) -> Self {
         Self {
             rpc_client,
-            cache: Arc::new(RwLock::new(HashMap::default())),
+            cache: Arc::new(RwLock::new(Cache {
+                properties: HashMap::default(),
+                last_update: SystemTime::now(),
+            })),
             cache_ttl: Duration::from_secs(cache_ttl_secs),
         }
     }
 
     /// Get a banner by type
+    #[tracing::instrument(skip(self))]
     pub async fn get_property(&self, property: GatewayProperty) -> Result<String, String> {
-        // Check cache first
+        // 1. Try to get from cache if it's not stale
         {
             let cache = self.cache.read().await;
-            if let Some((value, last_update)) = cache.get(&property) {
-                if let Ok(elapsed) = last_update.elapsed()
-                    && elapsed < self.cache_ttl
-                {
-                    return Ok(value.clone());
+            if let Some((value, last_update)) = cache.properties.get(&property) {
+                if let Ok(elapsed) = last_update.elapsed() {
+                    if elapsed < self.cache_ttl {
+                        return Ok(value.clone());
+                    }
                 }
             }
         }
 
-        // Cache miss or expired, refresh cache from database
-        self.refresh_cached_properties(&[property]).await?;
+        // 2. Cache miss or expired, refresh from server
+        // Note: refresh_cached_properties updates the cache internally
+        let _ = self.refresh_cached_properties(&[property]).await;
 
-        // Check Cache Again
+        // 3. Try to get from cache again after refresh
         {
             let cache = self.cache.read().await;
-            if let Some((value, last_update)) = cache.get(&property) {
-                if let Ok(elapsed) = last_update.elapsed()
-                    && elapsed < self.cache_ttl
-                {
-                    return Ok(value.clone());
+            if let Some((value, last_update)) = cache.properties.get(&property) {
+                if let Ok(elapsed) = last_update.elapsed() {
+                    if elapsed < self.cache_ttl {
+                        return Ok(value.clone());
+                    }
                 }
             }
         }
 
-        // Else use the default
-        {
-            match property {
-                GatewayProperty::BannerWelcome => Ok(BANNER_WELCOME_DEFAULT.to_string()),
-                GatewayProperty::BannerMotd => Ok(BANNER_MOTD_DEFAULT.to_string()),
-                GatewayProperty::BannerLogin => Ok(BANNER_LOGIN_DEFAULT.to_string()),
-                GatewayProperty::BannerLogout => Ok(BANNER_LOGOUT_DEFAULT.to_string()),
-                GatewayProperty::AdminHtml => Ok(WEBAPP_ADMIN_HTML_DEFAULT.to_string()),
-                GatewayProperty::AdminCss => Ok(WEBAPP_ADMIN_CSS_DEFAULT.to_string()),
-                GatewayProperty::AdminJs => Ok(WEBAPP_ADMIN_JS_DEFAULT.to_string()),
-                GatewayProperty::ClientHtml => Ok(WEBAPP_CLIENT_HTML_DEFAULT.to_string()),
-                GatewayProperty::ClientCss => Ok(WEBAPP_CLIENT_CSS_DEFAULT.to_string()),
-                GatewayProperty::ClientJs => Ok(WEBAPP_CLIENT_JS_DEFAULT.to_string()),
-            }
-        }
+        // 4. Fallback to default values
+        Ok(match property {
+            GatewayProperty::BannerWelcome => BANNER_WELCOME_DEFAULT.to_string(),
+            GatewayProperty::BannerMotd => BANNER_MOTD_DEFAULT.to_string(),
+            GatewayProperty::BannerLogin => BANNER_LOGIN_DEFAULT.to_string(),
+            GatewayProperty::BannerLogout => BANNER_LOGOUT_DEFAULT.to_string(),
+            GatewayProperty::AdminHtml => WEBAPP_ADMIN_HTML_DEFAULT.to_string(),
+            GatewayProperty::AdminCss => WEBAPP_ADMIN_CSS_DEFAULT.to_string(),
+            GatewayProperty::AdminJs => WEBAPP_ADMIN_JS_DEFAULT.to_string(),
+            GatewayProperty::ClientHtml => WEBAPP_CLIENT_HTML_DEFAULT.to_string(),
+            GatewayProperty::ClientCss => WEBAPP_CLIENT_CSS_DEFAULT.to_string(),
+            GatewayProperty::ClientJs => WEBAPP_CLIENT_JS_DEFAULT.to_string(),
+        })
     }
 
     /// Refresh the banner cache from database settings table via RPC
+    #[tracing::instrument(skip(self))]
     pub async fn refresh_cached_properties(
         &self,
         properties: &[GatewayProperty],
     ) -> Result<HashMap<GatewayProperty, String>, String> {
         tracing::debug!("Refreshing banner cache from server via RPC");
+
+        // Call fetch_gateway_properties RPC
+        let request = wyldlands_common::proto::GatewayPropertiesRequest {
+            properties: properties
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect(),
+        };
 
         // Check if the RPC client is connected
         if !self.rpc_client.is_connected().await {
@@ -117,8 +129,7 @@ impl PropertiesManager {
         }
 
         // Get RPC client
-        use wyldlands_common::proto::GatewayManagementClient;
-        let mut client: GatewayManagementClient = match self.rpc_client.gateway_client().await {
+        let mut client = match self.rpc_client.gateway_client().await {
             Some(c) => c,
             None => {
                 tracing::warn!("No RPC client available, unable to refresh properties");
@@ -126,29 +137,21 @@ impl PropertiesManager {
             }
         };
 
-        // Call fetch_gateway_properties RPC
-        let request = wyldlands_common::proto::GatewayPropertiesRequest {
-            properties: Vec::from_iter(
-                properties
-                    .iter()
-                    .map(|property| property.as_str().to_string()),
-            ),
-        };
-
         match client.fetch_gateway_properties(request).await {
             Ok(response) => {
                 let response = response.into_inner();
-
-                // Update cache with server banners
+                let now = SystemTime::now();
                 let mut out = HashMap::default();
                 let mut cache = self.cache.write().await;
+
                 for (key, value) in response.properties {
                     if let Some(property) = GatewayProperty::from_str(&key) {
-                        cache.insert(property, (value.clone(), SystemTime::now()));
+                        cache.properties.insert(property, (value.clone(), now));
                         out.insert(property, value);
                     }
                 }
 
+                cache.last_update = now;
                 tracing::info!("Gateway Property cache refreshed from server via RPC");
                 Ok(out)
             }
@@ -160,16 +163,22 @@ impl PropertiesManager {
     }
 }
 
-const BANNER_WELCOME_DEFAULT: &str = include_str!("../defaults/welcome.txt");
-const BANNER_MOTD_DEFAULT: &str = include_str!("../defaults/motd.txt");
-const BANNER_LOGIN_DEFAULT: &str = include_str!("../defaults/login.txt");
-const BANNER_LOGOUT_DEFAULT: &str = include_str!("../defaults/logout.txt");
-const WEBAPP_ADMIN_HTML_DEFAULT: &str = include_str!("../defaults/admin.html");
-const WEBAPP_ADMIN_CSS_DEFAULT: &str = include_str!("../defaults/admin.css");
-const WEBAPP_ADMIN_JS_DEFAULT: &str = include_str!("../defaults/admin.js");
-const WEBAPP_CLIENT_HTML_DEFAULT: &str = include_str!("../defaults/client.html");
-const WEBAPP_CLIENT_CSS_DEFAULT: &str = include_str!("../defaults/client.css");
-const WEBAPP_CLIENT_JS_DEFAULT: &str = include_str!("../defaults/client.js");
+#[derive(Debug)]
+struct Cache {
+    properties: HashMap<GatewayProperty, (String, SystemTime)>,
+    last_update: SystemTime,
+}
+
+pub const BANNER_WELCOME_DEFAULT: &str = include_str!("../defaults/welcome.txt");
+pub const BANNER_MOTD_DEFAULT: &str = include_str!("../defaults/motd.txt");
+pub const BANNER_LOGIN_DEFAULT: &str = include_str!("../defaults/login.txt");
+pub const BANNER_LOGOUT_DEFAULT: &str = include_str!("../defaults/logout.txt");
+pub const WEBAPP_ADMIN_HTML_DEFAULT: &str = include_str!("../defaults/admin.html");
+pub const WEBAPP_ADMIN_CSS_DEFAULT: &str = include_str!("../defaults/admin.css");
+pub const WEBAPP_ADMIN_JS_DEFAULT: &str = include_str!("../defaults/admin.js");
+pub const WEBAPP_CLIENT_HTML_DEFAULT: &str = include_str!("../defaults/client.html");
+pub const WEBAPP_CLIENT_CSS_DEFAULT: &str = include_str!("../defaults/client.css");
+pub const WEBAPP_CLIENT_JS_DEFAULT: &str = include_str!("../defaults/client.js");
 
 #[cfg(test)]
 mod tests {
@@ -182,5 +191,50 @@ mod tests {
             GatewayProperty::BannerWelcome
         );
         assert_ne!(GatewayProperty::BannerWelcome, GatewayProperty::BannerMotd);
+    }
+
+    #[tokio::test]
+    async fn test_properties_manager_cache_logic() {
+        let rpc_client = Arc::new(crate::grpc::RpcClientManager::new(
+            "127.0.0.1:9000",
+            "test-key",
+            5,
+            30,
+        ));
+        let manager = PropertiesManager::new(rpc_client, 1); // 1 second TTL
+
+        // Initially cache is empty
+        {
+            let cache = manager.cache.read().await;
+            assert!(cache.properties.get(&GatewayProperty::BannerWelcome).is_none());
+        }
+
+        // Manually populate cache
+        let now = SystemTime::now();
+        {
+            let mut cache = manager.cache.write().await;
+            cache.properties.insert(
+                GatewayProperty::BannerWelcome,
+                ("Cached Welcome".to_string(), now),
+            );
+        }
+
+        // Should get from cache
+        let prop = manager.get_property(GatewayProperty::BannerWelcome).await;
+        assert_eq!(prop.unwrap(), "Cached Welcome");
+
+        // Make it stale
+        let stale_time = now - Duration::from_secs(2);
+        {
+            let mut cache = manager.cache.write().await;
+            cache.properties.insert(
+                GatewayProperty::BannerWelcome,
+                ("Stale Welcome".to_string(), stale_time),
+            );
+        }
+
+        // Should attempt refresh (and fail since no server) and return default
+        let prop = manager.get_property(GatewayProperty::BannerWelcome).await;
+        assert_eq!(prop.unwrap(), BANNER_WELCOME_DEFAULT);
     }
 }

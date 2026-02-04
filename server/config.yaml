@@ -8,6 +8,7 @@ database:
 listener:
   addr: ${WYLDLANDS_LISTENER_ADDR:-0.0.0.0:6006}
   auth_key: ${WYLDLANDS_AUTH_KEY:-default-secret-key-change-in-production}
+  gateway_addr: ${WYLDLANDS_GATEWAY_ADDR:-localhost:6005}
 
 # LLM Configuration for NPC dialogue and content generation
 llm:

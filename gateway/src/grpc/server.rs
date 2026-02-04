@@ -49,7 +49,7 @@ impl GatewayRpcServer {
 
     /// Send structured output to a client based on their capabilities
     ///
-    /// Routes structured data to the appropriate protocol:
+    /// Routes structured data to the appropriate sidechannel:
     /// - GMCP for telnet clients that support it
     /// - MSDP for telnet clients that support it
     /// - WebSocket JSON for WebSocket clients
@@ -62,7 +62,7 @@ impl GatewayRpcServer {
     ) -> Result<(), String> {
         // Try GMCP first (preferred for modern clients)
         if capabilities.gmcp {
-            match crate::protocol::gmcp::encode_structured_output(structured) {
+            match crate::sidechannel::gmcp::encode_structured_output(structured) {
                 Ok(data) => {
                     tracing::debug!(
                         "Sending structured output via GMCP to session {}",
@@ -78,7 +78,7 @@ impl GatewayRpcServer {
 
         // Try MSDP next
         if capabilities.msdp {
-            match crate::protocol::msdp::encode_structured_output(structured) {
+            match crate::sidechannel::msdp::encode_structured_output(structured) {
                 Ok(data) => {
                     tracing::debug!(
                         "Sending structured output via MSDP to session {}",
@@ -94,7 +94,7 @@ impl GatewayRpcServer {
 
         // Try WebSocket JSON
         if capabilities.websocket_json {
-            match crate::protocol::json::encode_structured_output(structured) {
+            match crate::sidechannel::json::encode_structured_output(structured) {
                 Ok(json_str) => {
                     tracing::debug!(
                         "Sending structured output via WebSocket JSON to session {}",

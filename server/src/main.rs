@@ -18,23 +18,32 @@ use clap::Parser;
 use sqlx::Executor;
 use std::net::SocketAddr;
 use tonic::transport::Server;
-use tracing_subscriber::EnvFilter;
+use tracing::instrument;
+use tracing_flame::FlameLayer;
+use tracing_subscriber::{EnvFilter, Registry, fmt::time::ChronoUtc, prelude::*};
 use wyldlands_common::proto::{GatewayManagementServer, SessionToWorldServer};
 use wyldlands_server::config::{Arguments, Configuration};
 use wyldlands_server::listener::ServerRpcHandler;
 
 #[tokio::main]
+#[instrument(name = "server_main")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load arguments from the command line
     let arguments: Arguments = Parser::parse();
 
-    // Initialize tracing/logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+    let (flame_layer, _guard) = FlameLayer::with_file("server.folded")?;
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_thread_ids(true)
         .with_level(true)
         .with_ansi(true)
+        .with_timer(ChronoUtc::rfc_3339());
+
+    Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(fmt_layer)
+        .with(flame_layer)
         .init();
 
     // Load environment variables from .env file if specified
@@ -105,8 +114,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting gRPC server on {}", listen_addr);
 
     // Create the RPC handler with world context
-    let handler = ServerRpcHandler::new(config.listener.auth_key.as_str(), world_context);
+    let handler = ServerRpcHandler::new(
+        config.listener.auth_key.as_str(),
+        world_context,
+        &config.listener.gateway_addr.to_string(),
+    );
     tracing::info!("Server RPC handler initialized with persistence");
+
+    // Connect to gateway for sending messages back
+    if let Err(e) = handler.connect_to_gateway().await {
+        tracing::warn!("Failed to connect to gateway initially: {}. Will retry on first message.", e);
+    }
 
     // Start gRPC server
     Server::builder()

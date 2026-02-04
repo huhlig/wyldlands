@@ -63,11 +63,8 @@ serde_json = { version = "1" }
 serde_yaml = { version = "0.9", features = [] }
 serde-env-field = { version = "0.4" }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "tls-rustls", "uuid", "chrono", "migrate"] }
+termionix-server = { git = "https://github.com/huhlig/termionix.git" }
 termionix-service = { git = "https://github.com/huhlig/termionix.git" }
-termionix-terminal = { git = "https://github.com/huhlig/termionix.git" }
-termionix-ansicodec = { git = "https://github.com/huhlig/termionix.git" }
-termionix-telnetcodec = { git = "https://github.com/huhlig/termionix.git" }
-termionix-compress = { git = "https://github.com/huhlig/termionix.git" }
 tempfile = { version = "3" }
 tokio = { version = "1", features = ["rt-multi-thread", "tracing", "net", "test-util", "macros", "signal"] }
 tokio-test = { version = "0.4" }
@@ -77,10 +74,14 @@ tonic-build = { version = "0.14" }
 tonic-prost = { version = "0.14" }
 tonic-prost-build = { version = "0.14" }
 tracing = { version = "0.1", features = ["default"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time", "local-time", "chrono"] }
 tracing-test = { version = "0.2" }
 tracing-timing = { version = "0.7" }
+tracing-flame = { version = "0.2" }
 uuid = { version = "1", features = ["serde", "v4"] }
 wyldlands-common = { path = "common" }
 wyldlands-gateway = { path = "gateway" }
 wyldlands-server = { path = "server" }
+
+[profile.release]
+debug = true
